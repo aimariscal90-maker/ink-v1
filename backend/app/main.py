@@ -1,15 +1,19 @@
 from fastapi import FastAPI
 
+from app.core.config import get_settings
+
+settings = get_settings()
+
 app = FastAPI(
-    title="Ink API",
+    title=settings.app_name,
     version="0.1.0",
-    description="Base API bootstrap for Ink Comic Translator."
+    description="Ink API - Comic translation backend.",
 )
 
-@app.get("/", tags=["root"])
+@app.get("/")
 def read_root() -> dict:
     return {"message": "Welcome to the Ink API!"}
 
 @app.get("/health", tags=["health"])
 def health_check() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "environment": settings.environment}

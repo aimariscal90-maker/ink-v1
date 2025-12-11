@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pytest_cache/
+.venv/
+venv/
+.env
+
+# FastAPI / Logs
+*.log
+
+# Node / Next.js
+node_modules/
+.next/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+package-lock.json
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
+# Data y builds temporales
+data/
+tmp/
