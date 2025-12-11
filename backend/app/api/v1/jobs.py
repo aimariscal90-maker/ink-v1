@@ -6,15 +6,17 @@ from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
 
 from app.core.enums import JobType, OutputFormat
-from app.services.job_service import JobService
+
+from fastapi.responses import FileResponse
+
+from app.services.job_store import job_service
+from app.services.pipeline_service import PipelineService
 from app.models.job import Job
 from app.core.config import get_settings
 
 router = APIRouter()
 settings = get_settings()
-
-# TEMP: JobService global para MVP (más adelante se inyecta)
-job_service = JobService()
+pipeline_service = PipelineService(job_service=job_service)
 
 
 def detect_job_type(filename: str) -> JobType:
@@ -106,3 +108,72 @@ async def get_job_status(job_id: str) -> dict:
         "error_message": job.error_message,
         "output_path": str(job.output_path) if job.output_path else None,
     }
+
+
+@router.post("/jobs/{job_id}/process", summary="Process a job synchronously (PDF only for now)")
+async def process_job(job_id: str) -> dict:
+    try:
+        job = pipeline_service.process_job(job_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found.",
+        )
+    except NotImplementedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Job processing failed: {e}",
+        )
+
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "type": job.type,
+        "output_format": job.output_format,
+        "num_pages": job.num_pages,
+        "error_message": job.error_message,
+        "output_path": str(job.output_path) if job.output_path else None,
+    }
+
+@router.get("/jobs/{job_id}/download", summary="Download processed file")
+async def download_job_output(job_id: str):
+    job = job_service.get_job(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found.",
+        )
+
+    if not job.output_path or job.output_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job has no output yet.",
+        )
+
+    output_path = Path(job.output_path)
+    if not output_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Output file not found on disk.",
+        )
+
+    if job.output_format == OutputFormat.PDF:
+        media_type = "application/pdf"
+        filename = f"{job.id}.pdf"
+    elif job.output_format == OutputFormat.CBZ:
+        media_type = "application/zip"
+        filename = f"{job.id}.cbz"
+    else:
+        media_type = "application/octet-stream"
+        filename = output_path.name
+
+    return FileResponse(
+        path=output_path,
+        media_type=media_type,
+        filename=filename,
+    )
