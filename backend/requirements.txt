@@ -6,3 +6,5 @@ pydantic-settings
 pymupdf
 Pillow
 rarfile
+google-cloud-vision
+google-auth

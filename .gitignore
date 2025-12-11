@@ -30,3 +30,4 @@ package-lock.json
 # Data y builds temporales
 data/
 tmp/
+backend/.gcp/
