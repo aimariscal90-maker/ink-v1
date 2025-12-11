@@ -8,3 +8,4 @@ Pillow
 rarfile
 google-cloud-vision
 google-auth
+openai>=1.0.0
