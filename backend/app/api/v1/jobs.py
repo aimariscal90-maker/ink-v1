@@ -14,10 +14,10 @@ from app.services.pipeline_service import PipelineService
 from app.models.job import Job
 from app.core.config import get_settings
 
-router = APIRouter()
+router = APIRouter(prefix="/jobs", tags=["jobs"])
+
 settings = get_settings()
 pipeline_service = PipelineService(job_service=job_service)
-
 
 def detect_job_type(filename: str) -> JobType:
     """
@@ -44,7 +44,7 @@ def detect_output_format(job_type: JobType) -> OutputFormat:
     return OutputFormat.CBZ
 
 
-@router.post("/jobs", summary="Upload a comic and create a processing job")
+@router.post("", summary="Upload a comic and create a processing job")
 async def create_job(file: UploadFile = File(...)) -> dict:
     job_type = detect_job_type(file.filename)
     output_format = detect_output_format(job_type)
@@ -90,7 +90,7 @@ async def create_job(file: UploadFile = File(...)) -> dict:
     }
 
 
-@router.get("/jobs/{job_id}", summary="Get job status")
+@router.get("/{job_id}", summary="Get job status")
 async def get_job_status(job_id: str) -> dict:
     job = job_service.get_job(job_id)
     if not job:
@@ -110,7 +110,7 @@ async def get_job_status(job_id: str) -> dict:
     }
 
 
-@router.post("/jobs/{job_id}/process", summary="Process a job synchronously (PDF only for now)")
+@router.post("/{job_id}/process", summary="Process a job synchronously (PDF only for now)")
 async def process_job(job_id: str) -> dict:
     try:
         job = pipeline_service.process_job(job_id)
@@ -140,7 +140,7 @@ async def process_job(job_id: str) -> dict:
         "output_path": str(job.output_path) if job.output_path else None,
     }
 
-@router.get("/jobs/{job_id}/download", summary="Download processed file")
+@router.get("/{job_id}/download", summary="Download processed file")
 async def download_job_output(job_id: str):
     job = job_service.get_job(job_id)
     if not job:
@@ -149,7 +149,7 @@ async def download_job_output(job_id: str):
             detail="Job not found.",
         )
 
-    if not job.output_path or job.output_path is None:
+    if not job.output_path:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Job has no output yet.",
@@ -177,3 +177,7 @@ async def download_job_output(job_id: str):
         media_type=media_type,
         filename=filename,
     )
+
+
+
+# NOTE: process_job already defined above with the correct route.

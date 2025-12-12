@@ -31,3 +31,6 @@ package-lock.json
 data/
 tmp/
 backend/.gcp/
+
+# Tests artifacts
+backend/tests/files/*.pdf

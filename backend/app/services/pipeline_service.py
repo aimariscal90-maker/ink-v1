@@ -7,6 +7,7 @@ from app.core.config import get_settings
 from app.core.enums import JobType
 from app.models.job import Job
 from app.models.page import PageImage
+from app.models.text import TextRegion, TranslatedRegion
 from app.services.job_service import JobService
 from app.services.import_service import ImportService
 from app.services.ocr_service import OcrService
@@ -19,10 +20,12 @@ class PipelineService:
     """
     Orquesta el pipeline de procesamiento de un Job:
     import -> ocr -> traducción -> render -> export.
+    De momento solo soporta PDF.
     """
 
     def __init__(self, job_service: JobService) -> None:
         settings = get_settings()
+        # directorio raíz donde se guardan los jobs, p.ej: data/jobs
         self.data_dir: Path = settings.data_dir
         self.job_service = job_service
 
@@ -31,44 +34,50 @@ class PipelineService:
         self.render_service = RenderService()
         self.export_service = ExportService()
 
-    def process_job(self, job_id: str) -> Job:
-        """
-        Procesa un job de forma síncrona. De momento solo soporta PDF.
-        """
+    # ---------- NÚCLEO DEL PIPELINE (trabaja con un Job ya cargado) ----------
 
-        job = self.job_service.get_job(job_id)
-        if not job:
-            raise ValueError(f"Job not found: {job_id}")
+    def run_pipeline(self, job: Job) -> Job:
+        """
+        Pipeline completo:
+        1) Importar páginas
+        2) OCR
+        3) Traducir
+        4) Renderizar
+        5) Exportar PDF final
+        """
 
         if job.type != JobType.PDF:
-            # Mañana (día 9) añadimos soporte para cómics
+            # Más adelante añadiremos soporte CBR/CBZ
             raise NotImplementedError("Only PDF jobs are supported at the moment")
 
+        # Carpeta de trabajo concreta del job
         job_dir = self.data_dir / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         importer = ImportService(work_dir=job_dir)
 
-        # Marcamos como en procesamiento
+        # Marcar como en proceso
         job.mark_processing()
         self.job_service.update_job(job)
 
         try:
             # 1) Importar PDF -> imágenes
-            pages = importer.import_file(job.input_path, job.type)
+            pages: List[PageImage] = importer.import_file(job.input_path, job.type)
 
-            # 2) Para cada página: OCR -> Traducción -> Render
             translated_pages: List[PageImage] = []
 
             for page in pages:
-                regions = self.ocr_service.extract_text_regions(page.image_path)
+                # 2) OCR
+                regions: List[TextRegion] = self.ocr_service.extract_text_regions(page.image_path)
 
-                translated_regions = self.translation_service.translate_regions(
+                # 3) Traducción (batch por página)
+                translated_regions: List[TranslatedRegion] = self.translation_service.translate_regions(
                     regions=regions,
                     source_lang="en",
                     target_lang="es",
                 )
 
+                # 4) Renderizar imagen traducida
                 output_img_path = page.image_path.with_name(
                     page.image_path.stem + "_translated.png"
                 )
@@ -88,18 +97,31 @@ class PipelineService:
                     )
                 )
 
-            # 3) Exportar a PDF
+            # 5) Exportar PDF final
             output_path = job_dir / "output.pdf"
             self.export_service.export_pdf(translated_pages, output_path)
 
-            # 4) Marcar como completado
+            # Marcar como completado
             job.mark_completed(output_path=output_path, num_pages=len(translated_pages))
             self.job_service.update_job(job)
 
             return job
 
         except Exception as e:
-            # Marcamos el job como fallido y re-lanzamos
+            # Marcamos el job como fallido y relanzamos
             job.mark_failed(str(e))
             self.job_service.update_job(job)
             raise
+
+    # ---------- API USADA POR EL ENDPOINT (/jobs/{job_id}/process) ----------
+
+    def process_job(self, job_id: str) -> Job:
+        """
+        Busca el job por id y ejecuta el pipeline completo.
+        """
+
+        job = self.job_service.get_job(job_id)
+        if not job:
+            raise ValueError(f"Job not found: {job_id}")
+
+        return self.run_pipeline(job)

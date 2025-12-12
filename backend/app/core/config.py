@@ -15,10 +15,17 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     google_project_id: str | None = None
     google_credentials_file: str | None = None
+    # CORS
+    allowed_origins: list[str] = ["*"]
+    allow_credentials: bool = False
 
     class Config:
         env_file = ".env"
         case_sensitive = False
+
+
+
+
 
 
 @lru_cache
