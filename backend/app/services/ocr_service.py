@@ -14,7 +14,12 @@ class OcrService:
     """
 
     def __init__(self) -> None:
-        self.client = vision.ImageAnnotatorClient()
+        self.client = None
+
+    def _get_client(self):
+        if self.client is None:
+            self.client = vision.ImageAnnotatorClient()
+        return self.client
 
     def extract_text_regions(self, image_path: Path) -> List[TextRegion]:
         """
@@ -25,7 +30,8 @@ class OcrService:
             content = f.read()
 
         image = vision.Image(content=content)
-        response = self.client.text_detection(image=image)
+        client = self._get_client()
+        response = client.text_detection(image=image)
 
         if response.error.message:
             raise RuntimeError(f"Google Vision OCR error: {response.error.message}")

@@ -21,6 +21,10 @@ class Job(BaseModel):
     num_pages: Optional[int] = None
     error_message: Optional[str] = None
 
+    progress_current: int = 0
+    progress_total: Optional[int] = None
+    progress_stage: Optional[str] = None
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -35,9 +39,13 @@ class Job(BaseModel):
         self.status = JobStatus.COMPLETED
         self.output_path = output_path
         self.num_pages = num_pages
+        self.progress_stage = "completed"
+        if self.progress_total is not None:
+            self.progress_current = self.progress_total
         self.updated_at = datetime.utcnow()
 
     def mark_failed(self, error_message: str) -> None:
         self.status = JobStatus.FAILED
         self.error_message = error_message
+        self.progress_stage = "failed"
         self.updated_at = datetime.utcnow()
