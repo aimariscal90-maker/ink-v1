@@ -9,8 +9,9 @@ export default defineConfig({
     proxy: {
       // Todo lo que empiece por /api se reenvía al backend
       "/api": {
-        target: "https://congenial-zebra-g4j64jqw49gjfwrww-8000.github.dev", // FastAPI dentro del contenedor
+        target: "http://127.0.0.1:8000", // Reenvía al servidor backend local
         changeOrigin: true,
+        secure: false,
       },
     },
   },
