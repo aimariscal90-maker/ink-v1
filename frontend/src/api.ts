@@ -14,6 +14,9 @@ export interface CreateJobResponse {
   status: string;
   type: string;
   output_format: string;
+  progress_current: number;
+  progress_total: number | null;
+  progress_stage: string | null;
 }
 
 export interface JobStatusResponse {
@@ -24,6 +27,9 @@ export interface JobStatusResponse {
   num_pages: number | null;
   error_message: string | null;
   output_path: string | null;
+  progress_current: number;
+  progress_total: number | null;
+  progress_stage: string | null;
 }
 
 export async function uploadFile(file: File): Promise<CreateJobResponse> {

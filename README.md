@@ -29,3 +29,16 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Si usas el frontend con Vite localmente, en `frontend/vite.config.ts` hay una regla `proxy` que reenvía `/api` a `http://127.0.0.1:8000`, evitando posibles problemas de CORS en desarrollo.
 
 ```
+
+## Progreso del pipeline
+
+- El backend expone `progress_current`, `progress_total` y `progress_stage` en el endpoint de estado `/api/v1/jobs/{job_id}`.
+- Las etapas reportadas son: `import`, `ocr`, `translate`, `render`, `export` y `completed`.
+- El frontend muestra un texto contextual (p. ej. "OCR 3 / 24") y una barra de progreso calculada a partir de estos campos.
+
+### Tests
+
+```bash
+cd backend
+pytest
+```

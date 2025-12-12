@@ -87,6 +87,9 @@ async def create_job(file: UploadFile = File(...)) -> dict:
         "status": job.status,
         "type": job.type,
         "output_format": job.output_format,
+        "progress_current": job.progress_current,
+        "progress_total": job.progress_total,
+        "progress_stage": job.progress_stage,
     }
 
 
@@ -107,6 +110,9 @@ async def get_job_status(job_id: str) -> dict:
         "num_pages": job.num_pages,
         "error_message": job.error_message,
         "output_path": str(job.output_path) if job.output_path else None,
+        "progress_current": job.progress_current,
+        "progress_total": job.progress_total,
+        "progress_stage": job.progress_stage,
     }
 
 
@@ -138,6 +144,9 @@ async def process_job(job_id: str) -> dict:
         "num_pages": job.num_pages,
         "error_message": job.error_message,
         "output_path": str(job.output_path) if job.output_path else None,
+        "progress_current": job.progress_current,
+        "progress_total": job.progress_total,
+        "progress_stage": job.progress_stage,
     }
 
 @router.get("/{job_id}/download", summary="Download processed file")

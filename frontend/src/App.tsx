@@ -49,6 +49,42 @@ export default function App() {
     );
   }, [step]);
 
+  const progressInfo = useMemo(() => {
+    if (!jobStatus?.progress_total || jobStatus.progress_total <= 0) return null;
+
+    const total = jobStatus.progress_total;
+    const current = Math.min(jobStatus.progress_current ?? 0, total);
+    let percent = Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+
+    let text: string;
+    switch (jobStatus.progress_stage) {
+      case "import":
+        text = `Importando ${current} / ${total}`;
+        break;
+      case "ocr":
+        text = `OCR ${current} / ${total}`;
+        break;
+      case "translate":
+        text = `Traduciendo ${current} / ${total}`;
+        break;
+      case "render":
+        text = `Renderizando ${current} / ${total}`;
+        break;
+      case "export":
+        text = "Exportando…";
+        percent = 100;
+        break;
+      case "completed":
+        text = `Completado ${total} / ${total}`;
+        percent = 100;
+        break;
+      default:
+        text = `Procesando ${current} / ${total}`;
+    }
+
+    return { text, percent };
+  }, [jobStatus]);
+
   const pollUntilFinished = async (id: string) => {
     // 10 minutos por defecto. OCR + traducción puede tardar.
     const maxMs = 10 * 60 * 1000;
@@ -330,6 +366,36 @@ export default function App() {
         color: "#bfdbfe",
         marginLeft: "8px",
       } as React.CSSProperties,
+      progressBox: {
+        marginTop: "10px",
+        padding: "12px",
+        borderRadius: "10px",
+        background: "rgba(255,255,255,0.04)",
+        border: "1px solid rgba(255,255,255,0.06)",
+      } as React.CSSProperties,
+      progressText: {
+        fontSize: "14px",
+        marginBottom: "8px",
+        color: "rgba(229,231,235,0.9)",
+      } as React.CSSProperties,
+      progressBar: {
+        position: "relative",
+        width: "100%",
+        height: "10px",
+        borderRadius: "999px",
+        background: "rgba(255,255,255,0.08)",
+        overflow: "hidden",
+      } as React.CSSProperties,
+      progressFill: {
+        position: "absolute",
+        left: 0,
+        top: 0,
+        height: "100%",
+        borderRadius: "999px",
+        background:
+          "linear-gradient(90deg, rgba(59,130,246,0.9), rgba(34,197,94,0.9))",
+        transition: "width 0.3s ease",
+      } as React.CSSProperties,
     };
   }, [isBusy]);
 
@@ -380,6 +446,20 @@ export default function App() {
               <p style={styles.jobLine}>
                 <strong>Páginas:</strong> {jobStatus.num_pages}
               </p>
+            )}
+
+            {progressInfo && (
+              <div style={styles.progressBox}>
+                <div style={styles.progressText}>{progressInfo.text}</div>
+                <div style={styles.progressBar}>
+                  <div
+                    style={{
+                      ...styles.progressFill,
+                      width: `${progressInfo.percent}%`,
+                    }}
+                  />
+                </div>
+              </div>
             )}
           </div>
         )}
