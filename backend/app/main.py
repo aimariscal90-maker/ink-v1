@@ -24,14 +24,38 @@ app.add_middleware(
 
 @app.middleware("http")
 async def ensure_cors_header(request: Request, call_next):
+    """Fallback middleware that sets the CORS headers dynamically.
+
+    - If `ALLOWED_ORIGINS` contains `*`, respond `Access-Control-Allow-Origin: *`.
+    - Otherwise, if Origin is present and in the whitelist, echo it back.
+    - Optionally set `Access-Control-Allow-Credentials`.
+    """
+    origin = request.headers.get("origin")
     response = await call_next(request)
-    # Fallback: si por alguna razón el proxy/reversebackend remueve headers CORS,
-    # asegúrate de establecerlos en la respuesta final.
-    if "Access-Control-Allow-Origin" not in response.headers:
-        origins = ",".join(settings.allowed_origins) if settings.allowed_origins != ["*"] else "*"
-        response.headers["Access-Control-Allow-Origin"] = origins
+
+    # If there's no Origin header, nothing to do.
+    if not origin:
+        return response
+
+    allowed = settings.allowed_origins
+    # Fast path: wildcard
+    if allowed == ["*"]:
+        response.headers["Access-Control-Allow-Origin"] = "*"
         if settings.allow_credentials:
             response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
+    # If a list of origins is specified, echo the origin if allowed
+    try:
+        origins_list = [str(o) for o in allowed]
+    except Exception:
+        origins_list = [str(allowed)]
+
+    if origin in origins_list:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        if settings.allow_credentials:
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+
     return response
 
 
