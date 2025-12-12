@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class PageImage(BaseModel):
@@ -14,5 +14,4 @@ class PageImage(BaseModel):
     width: int | None = None
     height: int | None = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
