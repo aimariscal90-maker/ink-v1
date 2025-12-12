@@ -1,6 +1,5 @@
-// src/App.tsx
+import { useMemo, useState } from "react";
 
-import { useState } from "react";
 import {
   uploadFile,
   processJob,
@@ -8,264 +7,411 @@ import {
   downloadJob,
 } from "./api";
 
-
 import type { CreateJobResponse, JobStatusResponse } from "./api";
 
 type Step =
   | "idle"
   | "uploading"
-  | "processing"
+  | "starting"
   | "waiting"
   | "downloading"
   | "done"
   | "error";
 
-function App() {
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatSeconds(s: number) {
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}m ${r}s`;
+}
+
+export default function App() {
   const [file, setFile] = useState<File | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
+
   const [step, setStep] = useState<Step>("idle");
   const [message, setMessage] = useState<string>("");
-  const [error, setError] = useState<string | null>(null);
+
+  const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatusResponse | null>(null);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0] ?? null;
-    setFile(f);
-    setJobId(null);
-    setJobStatus(null);
-    setStep("idle");
-    setError(null);
-    setMessage("");
-  };
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!file) {
-      setError("Selecciona un archivo PDF o CBR primero.");
-      return;
-    }
-
-    try {
-      setError(null);
-      setMessage("Subiendo archivo...");
-      setStep("uploading");
-
-      // 1) Subir archivo → crear job
-      const createRes: CreateJobResponse = await uploadFile(file);
-      setJobId(createRes.job_id);
-      setMessage(`Job creado: ${createRes.job_id}. Iniciando procesamiento...`);
-
-      // 2) Lanzar procesamiento
-      setStep("processing");
-      await processJob(createRes.job_id);
-
-      // 3) Polling de estado hasta completed/failed
-      setStep("waiting");
-      await pollUntilFinished(createRes.job_id);
-
-      // 4) Si todo ok, descargar automáticamente
-      if (jobStatus?.status === "completed") {
-        setStep("downloading");
-        await handleDownload(createRes.job_id);
-        setStep("done");
-        setMessage("Traducción completada y archivo descargado.");
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message ?? "Error inesperado");
-      setStep("error");
-    }
-  };
+  const isBusy = useMemo(() => {
+    return (
+      step === "uploading" ||
+      step === "starting" ||
+      step === "waiting" ||
+      step === "downloading"
+    );
+  }, [step]);
 
   const pollUntilFinished = async (id: string) => {
-    const maxAttempts = 30; // 30 * 2s = 60s máximo
-    const delayMs = 2000;
+    // 10 minutos por defecto. OCR + traducción puede tardar.
+    const maxMs = 10 * 60 * 1000;
+    const startedAt = Date.now();
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let delayMs = 2000;
+    const maxDelayMs = 10000;
+
+    while (true) {
       const status = await getJobStatus(id);
       setJobStatus(status);
 
       if (status.status === "completed") {
         setMessage("Job completado. Preparando descarga...");
-        return;
+        return "completed" as const;
       }
 
       if (status.status === "failed") {
         throw new Error(status.error_message || "El procesamiento ha fallado.");
       }
 
-      setMessage(`Procesando... intento ${attempt}/${maxAttempts}`);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs > maxMs) {
+        // NO es un error fatal: el job puede seguir.
+        setMessage(
+          "Sigue procesando. Puedes esperar más o actualizar el estado cuando quieras."
+        );
+        return "still_processing" as const;
+      }
 
-    throw new Error("Timeout esperando a que termine el job.");
+      const elapsedS = Math.round(elapsedMs / 1000);
+      setMessage(
+        `Procesando... (${formatSeconds(elapsedS)}). Actualizando en ${Math.round(
+          delayMs / 1000
+        )}s...`
+      );
+
+      await sleep(delayMs);
+      delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.2));
+    }
   };
 
   const handleDownload = async (id: string) => {
     const blob = await downloadJob(id);
-    const url = window.URL.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
 
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ink-translated-${id}.pdf`;
+    a.download = `ink-${id}.pdf`; // MVP: PDF
     document.body.appendChild(a);
     a.click();
     a.remove();
-    window.URL.revokeObjectURL(url);
+
+    URL.revokeObjectURL(url);
   };
 
-  const isBusy =
-    step === "uploading" || step === "processing" || step === "waiting" || step === "downloading";
+  const handleSubmit = async () => {
+    setError(null);
+
+    if (!file) {
+      setError("Selecciona un archivo PDF primero.");
+      setStep("error");
+      return;
+    }
+
+    try {
+      setStep("uploading");
+      setMessage("Subiendo archivo...");
+
+      const created: CreateJobResponse = await uploadFile(file);
+
+      setJobId(created.job_id);
+      setMessage(`Job creado: ${created.job_id}. Iniciando procesamiento...`);
+
+      setStep("starting");
+      await processJob(created.job_id); // 202: se lanza en background
+
+      setStep("waiting");
+      setMessage("Procesando...");
+
+      const result = await pollUntilFinished(created.job_id);
+
+      if (result === "completed") {
+        setStep("downloading");
+        setMessage("Descargando resultado...");
+        await handleDownload(created.job_id);
+
+        setStep("done");
+        setMessage("Traducción completada y archivo descargado.");
+        return;
+      }
+
+      // still_processing: dejamos al usuario decidir
+      setStep("waiting");
+      setMessage(
+        "El job sigue procesando. Pulsa “Actualizar estado” en unos segundos, o “Seguir esperando”."
+      );
+    } catch (e: any) {
+      setStep("error");
+      setError(e?.message ?? "Error inesperado");
+    }
+  };
+
+  const handleRefresh = async () => {
+    if (!jobId) return;
+
+    try {
+      setError(null);
+      setStep("waiting");
+      setMessage("Actualizando estado...");
+
+      const s = await getJobStatus(jobId);
+      setJobStatus(s);
+
+      if (s.status === "completed") {
+        setMessage("Job completado. Descargando...");
+        setStep("downloading");
+        await handleDownload(jobId);
+        setStep("done");
+        setMessage("Descargado.");
+        return;
+      }
+
+      if (s.status === "failed") {
+        setStep("error");
+        setError(s.error_message || "Job fallido.");
+        return;
+      }
+
+      setMessage("Sigue procesando. Vuelve a actualizar en unos segundos.");
+    } catch (e: any) {
+      setStep("error");
+      setError(e?.message ?? "Error actualizando estado");
+    }
+  };
+
+  const handleContinueWaiting = async () => {
+    if (!jobId) return;
+
+    try {
+      setError(null);
+      setStep("waiting");
+      setMessage("Esperando a que termine...");
+
+      const result = await pollUntilFinished(jobId);
+
+      if (result === "completed") {
+        setStep("downloading");
+        setMessage("Descargando resultado...");
+        await handleDownload(jobId);
+        setStep("done");
+        setMessage("Traducción completada y archivo descargado.");
+        return;
+      }
+
+      setStep("waiting");
+      setMessage("Sigue procesando. Puedes seguir esperando cuando quieras.");
+    } catch (e: any) {
+      setStep("error");
+      setError(e?.message ?? "Error esperando");
+    }
+  };
+
+  const styles = useMemo(() => {
+    return {
+      page: {
+        minHeight: "100vh",
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "flex-start",
+        padding: "3rem 1.25rem",
+        background:
+          "radial-gradient(1200px 800px at 20% 10%, rgba(88, 101, 242, 0.18), transparent 55%), radial-gradient(900px 600px at 80% 30%, rgba(34, 197, 94, 0.14), transparent 55%), #0b1020",
+        color: "#e5e7eb",
+        fontFamily:
+          'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif',
+      } as React.CSSProperties,
+      card: {
+        width: "min(680px, 100%)",
+        borderRadius: "18px",
+        padding: "28px",
+        background: "rgba(13, 18, 40, 0.78)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
+        backdropFilter: "blur(10px)",
+      } as React.CSSProperties,
+      title: {
+        fontSize: "44px",
+        lineHeight: 1.05,
+        margin: 0,
+        fontWeight: 800,
+        letterSpacing: "-0.02em",
+      } as React.CSSProperties,
+      subtitle: {
+        marginTop: "10px",
+        marginBottom: "24px",
+        color: "rgba(229,231,235,0.78)",
+        fontSize: "16px",
+        lineHeight: 1.5,
+      } as React.CSSProperties,
+      label: {
+        fontSize: "14px",
+        color: "rgba(229,231,235,0.9)",
+        marginBottom: "8px",
+      } as React.CSSProperties,
+      fileRow: {
+        display: "flex",
+        gap: "12px",
+        alignItems: "center",
+        marginBottom: "18px",
+      } as React.CSSProperties,
+      fileInput: {
+        flex: 1,
+        padding: "10px",
+        borderRadius: "12px",
+        border: "1px solid rgba(255,255,255,0.14)",
+        background: "rgba(0,0,0,0.22)",
+        color: "#e5e7eb",
+      } as React.CSSProperties,
+      primaryButton: {
+        width: "100%",
+        padding: "14px 16px",
+        borderRadius: "999px",
+        border: "none",
+        cursor: isBusy ? "not-allowed" : "pointer",
+        fontWeight: 800,
+        fontSize: "18px",
+        background: isBusy ? "rgba(34,197,94,0.55)" : "#22c55e",
+        color: "#06110a",
+        boxShadow: "0 14px 36px rgba(34,197,94,0.25)",
+      } as React.CSSProperties,
+      secondaryButton: {
+        padding: "10px 12px",
+        borderRadius: "12px",
+        border: "1px solid rgba(255,255,255,0.14)",
+        background: "rgba(255,255,255,0.06)",
+        color: "#e5e7eb",
+        cursor: isBusy ? "not-allowed" : "pointer",
+        fontWeight: 700,
+      } as React.CSSProperties,
+      info: {
+        marginTop: "16px",
+        color: "rgba(229,231,235,0.86)",
+        fontSize: "14px",
+        lineHeight: 1.45,
+      } as React.CSSProperties,
+      warn: {
+        marginTop: "14px",
+        color: "rgba(250, 204, 21, 0.95)",
+        fontSize: "14px",
+        fontWeight: 700,
+      } as React.CSSProperties,
+      error: {
+        marginTop: "14px",
+        color: "rgba(248,113,113,0.95)",
+        fontSize: "14px",
+        fontWeight: 700,
+      } as React.CSSProperties,
+      jobBox: {
+        marginTop: "18px",
+        padding: "16px",
+        borderRadius: "14px",
+        border: "1px solid rgba(255,255,255,0.12)",
+        background: "rgba(0,0,0,0.22)",
+      } as React.CSSProperties,
+      jobLine: {
+        margin: 0,
+        fontSize: "14px",
+        color: "rgba(229,231,235,0.9)",
+      } as React.CSSProperties,
+      statusPill: {
+        display: "inline-flex",
+        padding: "4px 10px",
+        borderRadius: "999px",
+        fontSize: "12px",
+        fontWeight: 800,
+        background: "rgba(59,130,246,0.16)",
+        border: "1px solid rgba(59,130,246,0.22)",
+        color: "#bfdbfe",
+        marginLeft: "8px",
+      } as React.CSSProperties,
+    };
+  }, [isBusy]);
+
+  const statusLabel = jobStatus?.status ?? (jobId ? "uploaded" : "-");
 
   return (
     <div style={styles.page}>
       <div style={styles.card}>
         <h1 style={styles.title}>Ink v1 — Traductor de Cómics</h1>
         <p style={styles.subtitle}>
-          Sube tu cómic en PDF (MVP) y te devolvemos una versión traducida al castellano.
+          Sube tu cómic en PDF (MVP) y te devolvemos una versión traducida al
+          castellano.
         </p>
 
-        <form onSubmit={handleSubmit} style={styles.form}>
-          <label style={styles.label}>
-            Archivo:
+        <div style={{ marginBottom: "10px" }}>
+          <div style={styles.label}>Archivo:</div>
+          <div style={styles.fileRow}>
             <input
               type="file"
-              accept=".pdf,.cbr,.cbz,.zip"
-              onChange={handleFileChange}
+              accept=".pdf"
+              style={styles.fileInput}
               disabled={isBusy}
-              style={styles.input}
+              onChange={(e) => {
+                setError(null);
+                const f = e.target.files?.[0] ?? null;
+                setFile(f);
+              }}
             />
-          </label>
+          </div>
+        </div>
 
-          <button type="submit" disabled={!file || isBusy} style={styles.button}>
-            {isBusy ? "Procesando..." : "Traducir cómic"}
-          </button>
-        </form>
+        <button style={styles.primaryButton} disabled={isBusy} onClick={handleSubmit}>
+          {isBusy ? "Procesando..." : "Traducir cómic"}
+        </button>
 
-        {message && <p style={styles.message}>{message}</p>}
-
-        {error && <p style={styles.error}>⚠️ {error}</p>}
+        {message && <div style={styles.info}>{message}</div>}
 
         {jobId && (
           <div style={styles.jobBox}>
-            <p>
+            <p style={styles.jobLine}>
               <strong>Job ID:</strong> {jobId}
             </p>
-            {jobStatus && (
-              <>
-                <p>
-                  <strong>Estado:</strong> {jobStatus.status}
-                </p>
-                {jobStatus.num_pages != null && (
-                  <p>
-                    <strong>Páginas:</strong> {jobStatus.num_pages}
-                  </p>
-                )}
-              </>
+            <p style={styles.jobLine}>
+              <strong>Estado:</strong>
+              <span style={styles.statusPill}>{statusLabel}</span>
+            </p>
+            {jobStatus?.num_pages != null && (
+              <p style={styles.jobLine}>
+                <strong>Páginas:</strong> {jobStatus.num_pages}
+              </p>
             )}
           </div>
         )}
 
-        {step === "done" && jobId && (
-          <button
-            style={styles.secondaryButton}
-            onClick={() => handleDownload(jobId)}
-          >
-            Descargar de nuevo
-          </button>
+        {jobId && (
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
+            <button
+              style={styles.secondaryButton}
+              disabled={isBusy}
+              onClick={handleRefresh}
+            >
+              Actualizar estado
+            </button>
+
+            <button
+              style={styles.secondaryButton}
+              disabled={isBusy}
+              onClick={handleContinueWaiting}
+            >
+              Seguir esperando
+            </button>
+          </div>
         )}
+
+        {step === "waiting" && jobStatus?.status === "processing" && (
+          <div style={styles.warn}>
+            El job sigue procesando. Esto puede tardar varios minutos según el PDF.
+          </div>
+        )}
+
+        {error && <div style={styles.error}>⚠️ {error}</div>}
       </div>
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  page: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "#0f172a",
-    color: "#e5e7eb",
-    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-    padding: "1rem",
-  },
-  card: {
-    width: "100%",
-    maxWidth: "600px",
-    background: "#020617",
-    borderRadius: "16px",
-    padding: "24px",
-    boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
-    border: "1px solid #1f2937",
-  },
-  title: {
-    fontSize: "1.8rem",
-    marginBottom: "0.5rem",
-  },
-  subtitle: {
-    fontSize: "0.95rem",
-    color: "#9ca3af",
-    marginBottom: "1.5rem",
-  },
-  form: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "1rem",
-    marginBottom: "1rem",
-  },
-  label: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "0.5rem",
-    fontSize: "0.9rem",
-  },
-  input: {
-    padding: "0.4rem",
-    background: "#020617",
-    borderRadius: "8px",
-    border: "1px solid #374151",
-    color: "#e5e7eb",
-    fontSize: "0.9rem",
-  },
-  button: {
-    padding: "0.7rem 1rem",
-    borderRadius: "999px",
-    border: "none",
-    background: "#22c55e",
-    color: "#022c22",
-    fontWeight: 600,
-    fontSize: "0.95rem",
-    cursor: "pointer",
-  },
-  secondaryButton: {
-    marginTop: "0.5rem",
-    padding: "0.5rem 0.8rem",
-    borderRadius: "999px",
-    border: "1px solid #4b5563",
-    background: "transparent",
-    color: "#e5e7eb",
-    fontSize: "0.85rem",
-    cursor: "pointer",
-  },
-  message: {
-    fontSize: "0.9rem",
-    color: "#9ca3af",
-  },
-  error: {
-    marginTop: "0.5rem",
-    fontSize: "0.9rem",
-    color: "#f87171",
-  },
-  jobBox: {
-    marginTop: "0.75rem",
-    padding: "0.75rem",
-    borderRadius: "8px",
-    background: "#020617",
-    border: "1px solid #1f2937",
-    fontSize: "0.85rem",
-  },
-};
-
-export default App;
