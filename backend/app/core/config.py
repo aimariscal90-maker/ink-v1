@@ -30,4 +30,9 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    # Accept comma separated `ALLOWED_ORIGINS` env value as a string
+    ao = settings.allowed_origins
+    if isinstance(ao, str):
+        settings.allowed_origins = [s.strip() for s in ao.split(",") if s.strip()]
+    return settings
