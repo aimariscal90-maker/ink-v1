@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -25,15 +25,15 @@ class Job(BaseModel):
     progress_total: Optional[int] = None
     progress_stage: Optional[str] = None
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     class Config:
         arbitrary_types_allowed = True
 
     def mark_processing(self) -> None:
         self.status = JobStatus.PROCESSING
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
     def mark_completed(self, output_path: Path, num_pages: int) -> None:
         self.status = JobStatus.COMPLETED
@@ -42,10 +42,10 @@ class Job(BaseModel):
         self.progress_stage = "completed"
         if self.progress_total is not None:
             self.progress_current = self.progress_total
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
 
     def mark_failed(self, error_message: str) -> None:
         self.status = JobStatus.FAILED
         self.error_message = error_message
         self.progress_stage = "failed"
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(timezone.utc)
