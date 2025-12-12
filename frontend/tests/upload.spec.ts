@@ -1,14 +1,17 @@
 /// <reference types="node" />
 /// <reference types="node" />
 import { test, expect } from '@playwright/test';
-import * as path from 'path';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 test('upload file and check CORS header', async ({ page, baseURL }) => {
   const url = baseURL ?? 'http://127.0.0.1:5173';
   await page.goto(url);
 
   // In ESM environments `__dirname` may be undefined; use process.cwd() to resolve repo paths
-  const filePath = path.resolve(process.cwd(), 'backend/tests/files/sample.pdf');
+  // Create __dirname compatible in ESM and resolve to the repo root backend tests path
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const filePath = path.resolve(__dirname, '../../backend/tests/files/sample.pdf');
 
   // Set the file on input
   await page.setInputFiles('input[type="file"]', filePath);
