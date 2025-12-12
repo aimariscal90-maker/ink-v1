@@ -5,7 +5,9 @@
 // https://<nombre>-8000.app.github.dev
 // y ponla aquí:
 
-export const API_BASE_URL =   "https://congenial-zebra-g4j64jqw49gjfwrww-8000.app.github.dev";; // cámbialo luego por la URL del puerto 8000 en tu Codespace
+// Use Vite environment variable `VITE_API_BASE_URL` for flexibility in development/production.
+// If not set, an empty string will make requests relative to the current origin (so Vite's proxy works).
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 export interface CreateJobResponse {
   job_id: string;
