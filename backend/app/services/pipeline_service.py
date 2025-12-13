@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List
+import logging
 
 from app.core.config import get_settings
 from app.core.enums import JobType
@@ -58,19 +59,33 @@ class PipelineService:
 
         # Marcar como en proceso
         job.mark_processing()
+        job.progress_stage = "import"
+        job.progress_current = 0
+        job.progress_total = None
         self.job_service.update_job(job)
 
         try:
             # 1) Importar PDF -> imágenes
             pages: List[PageImage] = importer.import_file(job.input_path, job.type)
+            job.progress_total = len(pages)
+            job.progress_stage = "import"
+            job.progress_current = 0
+            self.job_service.update_job(job)
 
             translated_pages: List[PageImage] = []
 
             for page in pages:
+                page_number = page.index + 1
+
                 # 2) OCR
+                job.progress_current = page_number
+                job.progress_stage = "ocr"
+                self.job_service.update_job(job)
                 regions: List[TextRegion] = self.ocr_service.extract_text_regions(page.image_path)
 
                 # 3) Traducción (batch por página)
+                job.progress_stage = "translate"
+                self.job_service.update_job(job)
                 translated_regions: List[TranslatedRegion] = self.translation_service.translate_regions(
                     regions=regions,
                     source_lang="en",
@@ -78,6 +93,8 @@ class PipelineService:
                 )
 
                 # 4) Renderizar imagen traducida
+                job.progress_stage = "render"
+                self.job_service.update_job(job)
                 output_img_path = page.image_path.with_name(
                     page.image_path.stem + "_translated.png"
                 )
@@ -98,6 +115,9 @@ class PipelineService:
                 )
 
             # 5) Exportar PDF final
+            job.progress_stage = "export"
+            job.progress_current = job.progress_total or job.progress_current
+            self.job_service.update_job(job)
             output_path = job_dir / "output.pdf"
             self.export_service.export_pdf(translated_pages, output_path)
 
@@ -125,3 +145,11 @@ class PipelineService:
             raise ValueError(f"Job not found: {job_id}")
 
         return self.run_pipeline(job)
+
+    def process_job_background(self, job_id: str) -> None:
+        """Run the pipeline in a background task, logging failures safely."""
+
+        try:
+            self.process_job(job_id)
+        except Exception:
+            logging.exception("Background job %s failed", job_id)

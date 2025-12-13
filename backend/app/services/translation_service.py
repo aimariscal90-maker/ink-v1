@@ -19,12 +19,17 @@ class TranslationService:
         """
         model: nombre del modelo de OpenAI que se usará para la traducción.
         """
-        settings = get_settings()
+        get_settings()
 
         # El cliente usa OPENAI_API_KEY del entorno por defecto.
         # Si quieres, puedes también tomarla de settings.openai_api_key.
-        self.client = OpenAI()
+        self.client = None
         self.model = model
+
+    def _get_client(self):
+        if self.client is None:
+            self.client = OpenAI()
+        return self.client
 
     def translate_regions(
         self,
@@ -66,7 +71,8 @@ class TranslationService:
             # Podríamos añadir más contexto a futuro (escena, personajes, etc.)
         }
 
-        response = self.client.chat.completions.create(
+        client = self._get_client()
+        response = client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": system_prompt},
