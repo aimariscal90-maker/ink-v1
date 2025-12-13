@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List
+import logging
 
 from app.core.config import get_settings
 from app.core.enums import JobType
@@ -144,3 +145,11 @@ class PipelineService:
             raise ValueError(f"Job not found: {job_id}")
 
         return self.run_pipeline(job)
+
+    def process_job_background(self, job_id: str) -> None:
+        """Run the pipeline in a background task, logging failures safely."""
+
+        try:
+            self.process_job(job_id)
+        except Exception:
+            logging.exception("Background job %s failed", job_id)

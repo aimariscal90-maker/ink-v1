@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, BackgroundTasks
 
 from app.core.enums import JobType, OutputFormat
 
@@ -116,15 +116,27 @@ async def get_job_status(job_id: str) -> dict:
     }
 
 
-@router.post("/{job_id}/process", summary="Process a job synchronously (PDF only for now)")
-async def process_job(job_id: str) -> dict:
-    try:
-        job = pipeline_service.process_job(job_id)
-    except ValueError:
+@router.post(
+    "/{job_id}/process",
+    summary="Process a job asynchronously (PDF only for now)",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def process_job(job_id: str, background_tasks: BackgroundTasks) -> dict:
+    job = job_service.get_job(job_id)
+    if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found.",
         )
+
+    try:
+        job.mark_processing()
+        job.progress_stage = "import"
+        job.progress_current = 0
+        job.progress_total = None
+        job_service.update_job(job)
+
+        background_tasks.add_task(pipeline_service.process_job_background, job_id)
     except NotImplementedError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
