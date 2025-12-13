@@ -53,6 +53,9 @@ class StubTranslationService:
             for r in regions
         ]
 
+    def translate_regions_batch(self, regions, source_lang: str, target_lang: str):  # type: ignore[override]
+        return self.translate_regions(regions, source_lang, target_lang)
+
 
 class StubRenderService:
     def render_page(self, input_image: Path, regions, output_image: Path):  # type: ignore[override]

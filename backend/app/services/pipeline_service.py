@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import List
 import logging
+from pathlib import Path
+from time import perf_counter
+from typing import List
 
 from app.core.config import get_settings
 from app.core.enums import JobType
@@ -66,13 +67,20 @@ class PipelineService:
 
         try:
             # 1) Importar PDF -> imágenes
+            import_start = perf_counter()
             pages: List[PageImage] = importer.import_file(job.input_path, job.type)
+            job.timing_import_ms = int((perf_counter() - import_start) * 1000)
             job.progress_total = len(pages)
+            job.pages_total = len(pages)
             job.progress_stage = "import"
             job.progress_current = 0
             self.job_service.update_job(job)
 
             translated_pages: List[PageImage] = []
+            job.regions_total = 0
+            ocr_time = 0.0
+            translate_time = 0.0
+            render_time = 0.0
 
             for page in pages:
                 page_number = page.index + 1
@@ -81,16 +89,25 @@ class PipelineService:
                 job.progress_current = page_number
                 job.progress_stage = "ocr"
                 self.job_service.update_job(job)
-                regions: List[TextRegion] = self.ocr_service.extract_text_regions(page.image_path)
+                ocr_started_at = perf_counter()
+                regions: List[TextRegion] = self.ocr_service.extract_text_regions(
+                    page.image_path
+                )
+                ocr_time += perf_counter() - ocr_started_at
+                job.regions_total += len(regions)
 
                 # 3) Traducción (batch por página)
                 job.progress_stage = "translate"
                 self.job_service.update_job(job)
-                translated_regions: List[TranslatedRegion] = self.translation_service.translate_regions(
-                    regions=regions,
-                    source_lang="en",
-                    target_lang="es",
+                translate_started_at = perf_counter()
+                translated_regions: List[TranslatedRegion] = (
+                    self.translation_service.translate_regions_batch(
+                        regions=regions,
+                        source_lang="en",
+                        target_lang="es",
+                    )
                 )
+                translate_time += perf_counter() - translate_started_at
 
                 # 4) Renderizar imagen traducida
                 job.progress_stage = "render"
@@ -99,11 +116,13 @@ class PipelineService:
                     page.image_path.stem + "_translated.png"
                 )
 
+                render_started_at = perf_counter()
                 self.render_service.render_page(
                     input_image=page.image_path,
                     regions=translated_regions,
                     output_image=output_img_path,
                 )
+                render_time += perf_counter() - render_started_at
 
                 translated_pages.append(
                     PageImage(
@@ -118,8 +137,13 @@ class PipelineService:
             job.progress_stage = "export"
             job.progress_current = job.progress_total or job.progress_current
             self.job_service.update_job(job)
+            export_started_at = perf_counter()
             output_path = job_dir / "output.pdf"
             self.export_service.export_pdf(translated_pages, output_path)
+            job.timing_ocr_ms = int(ocr_time * 1000)
+            job.timing_translate_ms = int(translate_time * 1000)
+            job.timing_render_ms = int(render_time * 1000)
+            job.timing_export_ms = int((perf_counter() - export_started_at) * 1000)
 
             # Marcar como completado
             job.mark_completed(output_path=output_path, num_pages=len(translated_pages))

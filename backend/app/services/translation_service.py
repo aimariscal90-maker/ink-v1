@@ -7,6 +7,7 @@ from openai import OpenAI
 
 from app.core.config import get_settings
 from app.models.text import TextRegion, TranslatedRegion
+from app.services.cache_service import CacheService
 
 
 class TranslationService:
@@ -15,7 +16,9 @@ class TranslationService:
     regiones de texto de cómic.
     """
 
-    def __init__(self, model: str = "gpt-4.1-mini") -> None:
+    def __init__(
+        self, model: str = "gpt-4.1-mini", cache_service: CacheService | None = None
+    ) -> None:
         """
         model: nombre del modelo de OpenAI que se usará para la traducción.
         """
@@ -25,65 +28,41 @@ class TranslationService:
         # Si quieres, puedes también tomarla de settings.openai_api_key.
         self.client = None
         self.model = model
+        self.cache = cache_service or CacheService()
 
     def _get_client(self):
         if self.client is None:
             self.client = OpenAI()
         return self.client
 
-    def translate_regions(
-        self,
-        regions: List[TextRegion],
-        source_lang: str,
-        target_lang: str,
-    ) -> List[TranslatedRegion]:
-        """
-        Traduce una lista de regiones manteniendo IDs y bounding boxes.
-        """
-        if not regions:
-            return []
+    def translate_text_cached(self, text: str, target_lang: str) -> str:
+        cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
+        cached = self.cache.get_text(cache_key)
+        if cached is not None:
+            return cached
 
-        # Preparamos los datos de entrada para el modelo
-        payload = [
-            {
-                "id": r.id,
-                "text": r.text,
-            }
-            for r in regions
-        ]
+        translated = self._translate_single(text=text, target_lang=target_lang)
+        self.cache.set_text(cache_key, translated)
+        return translated
 
-        # Prompt: le pedimos JSON abierto muy concreto
-        system_prompt = (
-            "Eres un traductor profesional de cómics. "
-            "Traduces del idioma source_lang al idioma target_lang. "
-            "Tu prioridad es mantener el tono, naturalidad y estilo de diálogo.\n"
-            "- Respeta nombres propios.\n"
-            "- Mantén las onomatopeyas si tienen sentido en el idioma destino, "
-            "y si no, adáptalas de forma natural.\n"
-            "- NO añadas texto nuevo, no resumas, no expliques nada.\n"
-            "- Devuelve siempre un JSON válido y nada más."
-        )
-
-        user_content = {
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "items": payload,
-            # Podríamos añadir más contexto a futuro (escena, personajes, etc.)
-        }
-
+    def _translate_single(self, text: str, target_lang: str) -> str:
         client = self._get_client()
         response = client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": system_prompt},
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un traductor profesional. Traduce al idioma indicado. "
+                        "Devuelve solo el texto traducido, sin formato extra."
+                    ),
+                },
                 {
                     "role": "user",
                     "content": (
-                        "Traduce los diálogos o textos de cómic en 'items'.\n"
-                        "Devuelve SOLO un JSON con esta estructura exacta:\n"
-                        "{ \"items\": [ { \"id\": \"...\", \"translated_text\": \"...\" }, ... ] }\n\n"
-                        "Aquí tienes los datos:\n"
-                        f"{json.dumps(user_content, ensure_ascii=False)}"
+                        "Traduce al idioma destino y responde solo con el texto traducido.\n"
+                        f"Idioma destino: {target_lang}\n"
+                        f"Texto: {text}"
                     ),
                 },
             ],
@@ -94,43 +73,111 @@ class TranslationService:
         if raw is None:
             raise RuntimeError("OpenAI no devolvió contenido en la respuesta")
 
-        # Intentamos parsear el JSON
+        return raw.strip()
+
+    def _translate_texts_batch(
+        self, texts: List[str], source_lang: str, target_lang: str
+    ) -> List[str]:
+        client = self._get_client()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un traductor profesional de cómics. "
+                        "Traduce cada texto manteniendo tono y naturalidad."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Traduce cada elemento de la lista a "
+                        f"{target_lang} desde {source_lang}.\n"
+                        "Devuelve SOLO un JSON válido con esta forma exacta:\n"
+                        "{ \"translations\": [\"t1\", \"t2\", ...] }\n"
+                        "La lista de salida debe tener la MISMA longitud y orden que la entrada.\n"
+                        f"Entrada: {json.dumps(texts, ensure_ascii=False)}"
+                    ),
+                },
+            ],
+            temperature=0.2,
+        )
+
+        raw = response.choices[0].message.content
+        if raw is None:
+            raise RuntimeError("OpenAI no devolvió contenido en la respuesta")
+
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            raise RuntimeError(f"Respuesta de OpenAI no es JSON válido: {e}\nContenido: {raw!r}")
+            raise RuntimeError(
+                f"Respuesta de OpenAI no es JSON válido: {e}\nContenido: {raw!r}"
+            )
 
-        items = data.get("items")
-        if not isinstance(items, list):
-            raise RuntimeError(f"Respuesta de OpenAI mal formada, falta 'items': {data!r}")
+        translations = data.get("translations")
+        if not isinstance(translations, list):
+            raise RuntimeError(f"Respuesta de OpenAI mal formada: {data!r}")
 
-        # Crear un índice de id -> translated_text
-        translated_map: dict[str, str] = {}
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            item_id = str(item.get("id"))
-            translated_text = item.get("translated_text")
-            if translated_text is None:
-                continue
-            translated_map[item_id] = str(translated_text)
+        return [str(t) for t in translations]
 
-        # Ahora construimos la lista final de TranslatedRegion en el mismo orden
+    def translate_regions_batch(
+        self,
+        regions: List[TextRegion],
+        source_lang: str = "en",
+        target_lang: str = "es",
+    ) -> List[TranslatedRegion]:
+        if not regions:
+            return []
+
+        texts = [r.text for r in regions]
+        translations: List[str | None] = [None] * len(texts)
+        missing: list[tuple[int, str]] = []
+
+        for idx, text in enumerate(texts):
+            cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
+            cached = self.cache.get_text(cache_key)
+            if cached is not None:
+                translations[idx] = cached
+            else:
+                missing.append((idx, text))
+
+        if missing:
+            try:
+                batch_translations = self._translate_texts_batch(
+                    [t for _, t in missing], source_lang, target_lang
+                )
+                if len(batch_translations) != len(missing):
+                    raise RuntimeError("Longitud de traducciones no coincide con la entrada")
+
+                for (idx, text), translated in zip(missing, batch_translations):
+                    translations[idx] = translated
+                    cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
+                    self.cache.set_text(cache_key, translated)
+            except Exception:
+                for idx, text in missing:
+                    translations[idx] = self.translate_text_cached(text, target_lang)
+
         translated_regions: List[TranslatedRegion] = []
-        for r in regions:
-            translated_text = translated_map.get(r.id)
-            if translated_text is None:
-                # Si falta alguna, como fallback devolvemos el texto original
-                translated_text = r.text
-
+        for region, translated_text in zip(regions, translations):
             translated_regions.append(
                 TranslatedRegion(
-                    id=r.id,
-                    original_text=r.text,
-                    translated_text=translated_text,
-                    bbox=r.bbox,
-                    confidence=r.confidence,
+                    id=region.id,
+                    original_text=region.text,
+                    translated_text=translated_text or region.text,
+                    bbox=region.bbox,
+                    confidence=region.confidence,
                 )
             )
 
         return translated_regions
+
+    def translate_regions(
+        self,
+        regions: List[TextRegion],
+        source_lang: str,
+        target_lang: str,
+    ) -> List[TranslatedRegion]:
+        return self.translate_regions_batch(
+            regions=regions, source_lang=source_lang, target_lang=target_lang
+        )

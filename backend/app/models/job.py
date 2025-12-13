@@ -25,6 +25,16 @@ class Job(BaseModel):
     progress_total: Optional[int] = None
     progress_stage: Optional[str] = None
 
+    # Métricas
+    timing_import_ms: Optional[int] = None
+    timing_ocr_ms: Optional[int] = None
+    timing_translate_ms: Optional[int] = None
+    timing_render_ms: Optional[int] = None
+    timing_export_ms: Optional[int] = None
+
+    pages_total: int = 0
+    regions_total: int = 0
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
