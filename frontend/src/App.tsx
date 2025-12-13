@@ -29,6 +29,11 @@ function formatSeconds(s: number) {
   return `${m}m ${r}s`;
 }
 
+function formatMs(ms?: number | null) {
+  if (ms == null) return "-";
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
 
@@ -373,6 +378,26 @@ export default function App() {
         background: "rgba(255,255,255,0.04)",
         border: "1px solid rgba(255,255,255,0.06)",
       } as React.CSSProperties,
+      detailBox: {
+        marginTop: "12px",
+        padding: "12px",
+        borderRadius: "10px",
+        background: "rgba(255,255,255,0.02)",
+        border: "1px solid rgba(255,255,255,0.04)",
+      } as React.CSSProperties,
+      detailTitle: {
+        margin: 0,
+        fontSize: "14px",
+        fontWeight: 800,
+        color: "rgba(229,231,235,0.9)",
+      } as React.CSSProperties,
+      detailList: {
+        margin: "6px 0 0 16px",
+        padding: 0,
+        color: "rgba(229,231,235,0.86)",
+        fontSize: "14px",
+        lineHeight: 1.4,
+      } as React.CSSProperties,
       progressText: {
         fontSize: "14px",
         marginBottom: "8px",
@@ -459,6 +484,41 @@ export default function App() {
                     }}
                   />
                 </div>
+              </div>
+            )}
+
+            {jobStatus && (
+              <div style={styles.detailBox}>
+                <p style={styles.detailTitle}>Detalles</p>
+                <p style={styles.jobLine}>
+                  <strong>Etapa:</strong> {jobStatus.progress_stage ?? "-"}
+                </p>
+                <p style={styles.jobLine}>
+                  <strong>Progreso:</strong> {jobStatus.progress_current} /
+                  {" "}
+                  {jobStatus.progress_total ?? "-"}
+                </p>
+                {jobStatus.regions_total !== undefined && (
+                  <p style={styles.jobLine}>
+                    <strong>Regiones:</strong> {jobStatus.regions_total}
+                  </p>
+                )}
+                {jobStatus.status === "completed" && (
+                  <div style={{ marginTop: "8px" }}>
+                    <p style={styles.jobLine}>
+                      <strong>Tiempos:</strong>
+                    </p>
+                    <ul style={styles.detailList}>
+                      <li>Import: {formatMs(jobStatus.timing_import_ms)}</li>
+                      <li>OCR: {formatMs(jobStatus.timing_ocr_ms)}</li>
+                      <li>
+                        Traducción: {formatMs(jobStatus.timing_translate_ms)}
+                      </li>
+                      <li>Render: {formatMs(jobStatus.timing_render_ms)}</li>
+                      <li>Export: {formatMs(jobStatus.timing_export_ms)}</li>
+                    </ul>
+                  </div>
+                )}
               </div>
             )}
           </div>

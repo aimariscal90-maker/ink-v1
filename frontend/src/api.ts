@@ -17,6 +17,13 @@ export interface CreateJobResponse {
   progress_current: number;
   progress_total: number | null;
   progress_stage: string | null;
+  timing_import_ms?: number | null;
+  timing_ocr_ms?: number | null;
+  timing_translate_ms?: number | null;
+  timing_render_ms?: number | null;
+  timing_export_ms?: number | null;
+  pages_total?: number;
+  regions_total?: number;
 }
 
 export interface JobStatusResponse {
@@ -30,6 +37,13 @@ export interface JobStatusResponse {
   progress_current: number;
   progress_total: number | null;
   progress_stage: string | null;
+  timing_import_ms: number | null;
+  timing_ocr_ms: number | null;
+  timing_translate_ms: number | null;
+  timing_render_ms: number | null;
+  timing_export_ms: number | null;
+  pages_total: number;
+  regions_total: number;
 }
 
 export async function uploadFile(file: File): Promise<CreateJobResponse> {

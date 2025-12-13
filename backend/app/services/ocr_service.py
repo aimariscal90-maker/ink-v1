@@ -6,6 +6,7 @@ from typing import List
 from google.cloud import vision
 
 from app.models.text import BBox, TextRegion
+from app.services.cache_service import CacheService
 
 
 class OcrService:
@@ -13,8 +14,9 @@ class OcrService:
     Extrae regiones de texto desde una imagen usando Google Cloud Vision OCR.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cache_service: CacheService | None = None) -> None:
         self.client = None
+        self.cache = cache_service or CacheService()
 
     def _get_client(self):
         if self.client is None:
@@ -28,6 +30,13 @@ class OcrService:
 
         with open(image_path, "rb") as f:
             content = f.read()
+
+        image_hash = CacheService.key_hash(content)
+        cache_key = f"ocr:{image_hash}"
+
+        cached = self.cache.get_json(cache_key)
+        if cached and isinstance(cached.get("regions"), list):
+            return [TextRegion.model_validate(region) for region in cached["regions"]]
 
         image = vision.Image(content=content)
         client = self._get_client()
@@ -43,6 +52,12 @@ class OcrService:
         # Primer elemento es TODO el texto; los siguientes son palabras/fragmentos
         regions: List[TextRegion] = []
 
+        # Dimensiones reales de la imagen
+        import PIL.Image
+
+        with PIL.Image.open(image_path) as img:
+            width, height = img.width, img.height
+
         for idx, ann in enumerate(annotations[1:], start=1):
             vertices = ann.bounding_poly.vertices
 
@@ -56,16 +71,11 @@ class OcrService:
             x_max = max(xs)
             y_max = max(ys)
 
-            # Dimensiones reales de la imagen
-            import PIL.Image
-            with PIL.Image.open(image_path) as img:
-                W, H = img.width, img.height
-
             bbox = BBox(
-                x_min=x_min / W,
-                y_min=y_min / H,
-                x_max=x_max / W,
-                y_max=y_max / H,
+                x_min=x_min / width,
+                y_min=y_min / height,
+                x_max=x_max / width,
+                y_max=y_max / height,
             ).clamp()
 
             regions.append(
@@ -76,5 +86,7 @@ class OcrService:
                     confidence=None,  # Vision no da un score directo para cada palabra
                 )
             )
+
+        self.cache.set_json(cache_key, {"regions": [r.model_dump() for r in regions]})
 
         return regions
