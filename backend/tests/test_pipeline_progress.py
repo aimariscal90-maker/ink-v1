@@ -60,6 +60,9 @@ class StubTranslationService:
 class StubRenderService:
     def render_page(self, input_image: Path, regions, output_image: Path):  # type: ignore[override]
         output_image.touch()
+        return pipeline_service.RenderResult(
+            output_image=output_image, qa_overflow_count=0, qa_retry_count=0
+        )
 
 
 class StubExportService:
