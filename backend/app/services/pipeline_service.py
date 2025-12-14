@@ -14,7 +14,7 @@ from app.services.job_service import JobService
 from app.services.import_service import ImportService
 from app.services.ocr_service import OcrService
 from app.services.translation_service import TranslationService
-from app.services.render_service import RenderService
+from app.services.render_service import RenderResult, RenderService
 from app.services.export_service import ExportService
 
 
@@ -81,6 +81,8 @@ class PipelineService:
             ocr_time = 0.0
             translate_time = 0.0
             render_time = 0.0
+            qa_overflow_total = 0
+            qa_retry_total = 0
 
             for page in pages:
                 page_number = page.index + 1
@@ -117,17 +119,19 @@ class PipelineService:
                 )
 
                 render_started_at = perf_counter()
-                self.render_service.render_page(
+                render_result: RenderResult = self.render_service.render_page(
                     input_image=page.image_path,
                     regions=translated_regions,
                     output_image=output_img_path,
                 )
                 render_time += perf_counter() - render_started_at
+                qa_overflow_total += render_result.qa_overflow_count
+                qa_retry_total += render_result.qa_retry_count
 
                 translated_pages.append(
                     PageImage(
                         index=page.index,
-                        image_path=output_img_path,
+                        image_path=render_result.output_image,
                         width=page.width,
                         height=page.height,
                     )
@@ -144,6 +148,8 @@ class PipelineService:
             job.timing_translate_ms = int(translate_time * 1000)
             job.timing_render_ms = int(render_time * 1000)
             job.timing_export_ms = int((perf_counter() - export_started_at) * 1000)
+            job.qa_overflow_count = qa_overflow_total
+            job.qa_retry_count = qa_retry_total
 
             # Marcar como completado
             job.mark_completed(output_path=output_path, num_pages=len(translated_pages))
