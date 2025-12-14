@@ -27,3 +27,21 @@ def test_render_handles_overflow_and_retries(tmp_path):
     assert all(layout.font_size <= service.max_font_size for layout in result.layouts or [])
     assert result.qa_overflow_count >= 1
     assert result.qa_retry_count >= 1
+
+
+def test_render_handles_degenerate_bbox(tmp_path):
+    input_path = tmp_path / "page.png"
+    Image.new("RGB", (120, 120), color="white").save(input_path)
+
+    region = TranslatedRegion(
+        id="1",
+        original_text="",
+        translated_text="Texto",
+        bbox=BBox(x_min=0.5, y_min=0.5, x_max=0.5, y_max=0.5),
+    )
+
+    service = RenderService(max_font_size=20, min_font_size=8, padding_px=10)
+    result = service.render_page(input_path, [region], tmp_path / "out.png")
+
+    assert result.output_image.exists()
+    assert result.layouts and result.layouts[0].font_size <= service.max_font_size

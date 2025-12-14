@@ -64,9 +64,11 @@ class RenderService:
             # 1) Convertimos el BBox normalizado [0,1] a coordenadas de píxel
             x1, y1, x2, y2 = self._bbox_to_pixels(region.bbox, width, height)
 
-            # Añadir algo de padding interno (mínimo padding_px)
-            pad_x = max(self.padding_px, int((x2 - x1) * 0.05))
-            pad_y = max(self.padding_px, int((y2 - y1) * 0.05))
+            # Añadir algo de padding interno (mínimo padding_px) sin colapsar la caja
+            raw_pad_x = max(self.padding_px, int((x2 - x1) * 0.05))
+            raw_pad_y = max(self.padding_px, int((y2 - y1) * 0.05))
+            pad_x = min(raw_pad_x, max(0, (x2 - x1 - 1) // 2))
+            pad_y = min(raw_pad_y, max(0, (y2 - y1 - 1) // 2))
             box_x1 = x1 + pad_x
             box_y1 = y1 + pad_y
             box_x2 = x2 - pad_x
@@ -161,10 +163,19 @@ class RenderService:
         """
         Convierte BBox normalizado [0,1] a coordenadas de píxel (enteros).
         """
-        x1 = int(bbox.x_min * width)
-        y1 = int(bbox.y_min * height)
-        x2 = int(bbox.x_max * width)
-        y2 = int(bbox.y_max * height)
+        clamped = bbox.clamp()
+
+        x1 = int(clamped.x_min * width)
+        y1 = int(clamped.y_min * height)
+        x2 = int(clamped.x_max * width)
+        y2 = int(clamped.y_max * height)
+
+        # Evitar cajas degeneradas y mantenernos dentro de la imagen
+        x1 = max(0, min(x1, width - 1))
+        y1 = max(0, min(y1, height - 1))
+        x2 = max(x1 + 1, min(x2, width))
+        y2 = max(y1 + 1, min(y2, height))
+
         return x1, y1, x2, y2
 
     def _get_base_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
