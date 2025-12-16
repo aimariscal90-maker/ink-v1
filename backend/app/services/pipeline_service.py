@@ -83,6 +83,9 @@ class PipelineService:
             render_time = 0.0
             qa_overflow_total = 0
             qa_retry_total = 0
+            invalid_bbox_total = 0
+            discarded_region_total = 0
+            merged_region_total = 0
 
             for page in pages:
                 page_number = page.index + 1
@@ -97,6 +100,9 @@ class PipelineService:
                 )
                 ocr_time += perf_counter() - ocr_started_at
                 job.regions_total += len(regions)
+                invalid_bbox_total += self.ocr_service.last_invalid_bbox_count
+                discarded_region_total += self.ocr_service.last_discarded_region_count
+                merged_region_total += self.ocr_service.last_merged_region_count
 
                 # 3) Traducción (batch por página)
                 job.progress_stage = "translate"
@@ -127,6 +133,8 @@ class PipelineService:
                 render_time += perf_counter() - render_started_at
                 qa_overflow_total += render_result.qa_overflow_count
                 qa_retry_total += render_result.qa_retry_count
+                invalid_bbox_total += render_result.invalid_bbox_count
+                discarded_region_total += render_result.discarded_region_count
 
                 translated_pages.append(
                     PageImage(
@@ -150,6 +158,9 @@ class PipelineService:
             job.timing_export_ms = int((perf_counter() - export_started_at) * 1000)
             job.qa_overflow_count = qa_overflow_total
             job.qa_retry_count = qa_retry_total
+            job.invalid_bbox_count = invalid_bbox_total
+            job.discarded_region_count = discarded_region_total
+            job.merged_region_count = merged_region_total
 
             # Marcar como completado
             job.mark_completed(output_path=output_path, num_pages=len(translated_pages))

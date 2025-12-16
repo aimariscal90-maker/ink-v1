@@ -15,6 +15,8 @@ class RenderResult:
     output_image: Path
     qa_overflow_count: int = 0
     qa_retry_count: int = 0
+    invalid_bbox_count: int = 0
+    discarded_region_count: int = 0
     layouts: List[LayoutResult] | None = None
 
 
@@ -58,11 +60,18 @@ class RenderService:
         width, height = img.width, img.height
         overflow_count = 0
         retry_count = 0
+        invalid_bbox_count = 0
+        discarded_region_count = 0
         layouts: List[LayoutResult] = []
 
         for region in regions:
+            pixel_bbox = self._sanitize_bbox(region.bbox, width, height)
+            if pixel_bbox is None:
+                invalid_bbox_count += 1
+                continue
+
             # 1) Convertimos el BBox normalizado [0,1] a coordenadas de píxel
-            x1, y1, x2, y2 = self._bbox_to_pixels(region.bbox, width, height)
+            x1, y1, x2, y2 = pixel_bbox
 
             # Añadir algo de padding interno (mínimo padding_px) sin colapsar la caja
             raw_pad_x = max(self.padding_px, int((x2 - x1) * 0.05))
@@ -73,6 +82,10 @@ class RenderService:
             box_y1 = y1 + pad_y
             box_x2 = x2 - pad_x
             box_y2 = y2 - pad_y
+
+            if box_x2 - box_x1 < 2 or box_y2 - box_y1 < 2:
+                discarded_region_count += 1
+                continue
 
             # 2) Pintar un rectángulo blanco (tapamos texto original)
             draw.rectangle(
@@ -154,11 +167,17 @@ class RenderService:
             output_image=output_image,
             qa_overflow_count=overflow_count,
             qa_retry_count=retry_count,
+            invalid_bbox_count=invalid_bbox_count,
+            discarded_region_count=discarded_region_count,
             layouts=layouts,
         )
 
     # ---------- Helpers internos ----------
 
+    def _sanitize_bbox(self, bbox: BBox, width: int, height: int) -> Tuple[int, int, int, int] | None:
+        """Normaliza el bbox y asegura coordenadas válidas en píxeles."""
+
+        clamped = bbox.clamp()
     def _bbox_to_pixels(self, bbox: BBox, width: int, height: int) -> Tuple[int, int, int, int]:
         """
         Convierte BBox normalizado [0,1] a coordenadas de píxel (enteros).
@@ -175,6 +194,9 @@ class RenderService:
         y1 = max(0, min(y1, height - 1))
         x2 = max(x1 + 1, min(x2, width))
         y2 = max(y1 + 1, min(y2, height))
+
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            return None
 
         return x1, y1, x2, y2
 
