@@ -29,6 +29,15 @@ class StubImportService:
 
 
 class StubOcrService:
+    def __init__(self) -> None:
+        self.last_invalid_bbox_count = 0
+        self.last_discarded_region_count = 0
+        self.last_merged_region_count = 0
+        self.regions_detected_raw = 0
+        self.regions_after_paragraph_grouping = 0
+        self.regions_after_filter = 0
+        self.regions_after_merge = 1
+
     def extract_text_regions(self, image_path: Path):  # type: ignore[override]
         return [
             TextRegion(
@@ -60,6 +69,13 @@ class StubTranslationService:
 class StubRenderService:
     def render_page(self, input_image: Path, regions, output_image: Path):  # type: ignore[override]
         output_image.touch()
+        return pipeline_service.RenderResult(
+            output_image=output_image,
+            qa_overflow_count=0,
+            qa_retry_count=0,
+            invalid_bbox_count=0,
+            discarded_region_count=0,
+        )
 
 
 class StubExportService:

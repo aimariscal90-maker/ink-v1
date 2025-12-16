@@ -517,6 +517,13 @@ export default function App() {
                       <li>Render: {formatMs(jobStatus.timing_render_ms)}</li>
                       <li>Export: {formatMs(jobStatus.timing_export_ms)}</li>
                     </ul>
+                    <p style={styles.jobLine}>
+                      <strong>QA retries:</strong> {jobStatus.qa_retry_count ?? 0}
+                    </p>
+                    <p style={styles.jobLine}>
+                      <strong>Overflow detections:</strong>{" "}
+                      {jobStatus.qa_overflow_count ?? 0}
+                    </p>
                   </div>
                 )}
               </div>

@@ -24,6 +24,8 @@ export interface CreateJobResponse {
   timing_export_ms?: number | null;
   pages_total?: number;
   regions_total?: number;
+  qa_overflow_count?: number;
+  qa_retry_count?: number;
 }
 
 export interface JobStatusResponse {
@@ -44,6 +46,8 @@ export interface JobStatusResponse {
   timing_export_ms: number | null;
   pages_total: number;
   regions_total: number;
+  qa_overflow_count?: number;
+  qa_retry_count?: number;
 }
 
 export async function uploadFile(file: File): Promise<CreateJobResponse> {
