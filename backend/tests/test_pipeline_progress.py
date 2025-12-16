@@ -71,6 +71,7 @@ class StubRenderService:
             qa_retry_count=0,
             invalid_bbox_count=0,
             discarded_region_count=0,
+            output_image=output_image, qa_overflow_count=0, qa_retry_count=0
         )
 
 

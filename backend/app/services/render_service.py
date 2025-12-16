@@ -178,11 +178,18 @@ class RenderService:
         """Normaliza el bbox y asegura coordenadas válidas en píxeles."""
 
         clamped = bbox.clamp()
+    def _bbox_to_pixels(self, bbox: BBox, width: int, height: int) -> Tuple[int, int, int, int]:
+        """
+        Convierte BBox normalizado [0,1] a coordenadas de píxel (enteros).
+        """
+        clamped = bbox.clamp()
+
         x1 = int(clamped.x_min * width)
         y1 = int(clamped.y_min * height)
         x2 = int(clamped.x_max * width)
         y2 = int(clamped.y_max * height)
 
+        # Evitar cajas degeneradas y mantenernos dentro de la imagen
         x1 = max(0, min(x1, width - 1))
         y1 = max(0, min(y1, height - 1))
         x2 = max(x1 + 1, min(x2, width))
