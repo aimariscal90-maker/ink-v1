@@ -44,4 +44,5 @@ def test_render_handles_degenerate_bbox(tmp_path):
     result = service.render_page(input_path, [region], tmp_path / "out.png")
 
     assert result.output_image.exists()
-    assert result.layouts and result.layouts[0].font_size <= service.max_font_size
+    assert result.invalid_bbox_count >= 1
+    assert not result.layouts  # la región inválida se descarta sin lanzar excepción
