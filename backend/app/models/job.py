@@ -43,6 +43,8 @@ class Job(BaseModel):
     invalid_bbox_count: int = 0
     discarded_region_count: int = 0
     merged_region_count: int = 0
+    qa_overflow_count: int = 0
+    qa_retry_count: int = 0
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
