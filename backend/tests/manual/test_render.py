@@ -33,13 +33,13 @@ def main() -> None:
     render_service = RenderService()
     output_image = input_image.with_name(input_image.stem + "_translated.png")
 
-    result_path = render_service.render_page(
+    result = render_service.render_page(
         input_image=input_image,
         regions=[region],
         output_image=output_image,
     )
 
-    print("Imagen traducida generada en:", result_path)
+    print("Imagen traducida generada en:", result.output_image)
 
 
 if __name__ == "__main__":

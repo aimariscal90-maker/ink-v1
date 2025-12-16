@@ -97,6 +97,11 @@ async def create_job(file: UploadFile = File(...)) -> dict:
         "timing_export_ms": job.timing_export_ms,
         "pages_total": job.pages_total,
         "regions_total": job.regions_total,
+        "qa_overflow_count": job.qa_overflow_count,
+        "qa_retry_count": job.qa_retry_count,
+        "invalid_bbox_count": job.invalid_bbox_count,
+        "discarded_region_count": job.discarded_region_count,
+        "merged_region_count": job.merged_region_count,
     }
 
 
@@ -127,6 +132,11 @@ async def get_job_status(job_id: str) -> dict:
         "timing_export_ms": job.timing_export_ms,
         "pages_total": job.pages_total,
         "regions_total": job.regions_total,
+        "qa_overflow_count": job.qa_overflow_count,
+        "qa_retry_count": job.qa_retry_count,
+        "invalid_bbox_count": job.invalid_bbox_count,
+        "discarded_region_count": job.discarded_region_count,
+        "merged_region_count": job.merged_region_count,
     }
 
 
@@ -180,6 +190,11 @@ async def process_job(job_id: str, background_tasks: BackgroundTasks) -> dict:
         "timing_export_ms": job.timing_export_ms,
         "pages_total": job.pages_total,
         "regions_total": job.regions_total,
+        "qa_overflow_count": job.qa_overflow_count,
+        "qa_retry_count": job.qa_retry_count,
+        "invalid_bbox_count": job.invalid_bbox_count,
+        "discarded_region_count": job.discarded_region_count,
+        "merged_region_count": job.merged_region_count,
     }
 
 @router.get("/{job_id}/download", summary="Download processed file")
