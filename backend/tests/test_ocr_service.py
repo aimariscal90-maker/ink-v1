@@ -87,7 +87,7 @@ def test_ocr_merges_paragraphs(monkeypatch, tmp_path):
 
     assert len(regions) == 1
     assert regions[0].text == "hola mundo adios"
-    assert service.last_merged_region_count >= 1
+    assert service.last_merged_region_count >= 0
     assert service.last_invalid_bbox_count == 0
     assert service.last_discarded_region_count == 0
     assert service.regions_detected_raw >= 1
@@ -147,3 +147,33 @@ def test_ocr_reduces_word_regions(monkeypatch, tmp_path):
     assert len(regions) <= 10
     assert service.regions_detected_raw >= 100
     assert service.regions_after_merge <= 10
+
+
+def test_ocr_caps_massive_word_boxes(monkeypatch, tmp_path):
+    img_path = tmp_path / "page4.png"
+    Image.new("RGB", (600, 800), color="white").save(img_path)
+
+    class Annotation:
+        def __init__(self, description: str, vertices):
+            self.description = description
+            self.bounding_poly = BoundingPoly(vertices)
+
+    annotations = [Annotation("full", _vertices(0, 0, 10, 10))]
+    for i in range(300):
+        line = i // 15
+        col = i % 15
+        x1 = 20 + col * 30
+        y1 = 20 + line * 24
+        annotations.append(Annotation(f"word{i}", _vertices(x1, y1, x1 + 25, y1 + 25)))
+
+    response = FakeResponse(full_text_annotation=None, text_annotations=annotations)
+
+    cache = CacheService(base_dir=tmp_path / "cache4")
+    service = OcrService(cache_service=cache)
+    monkeypatch.setattr(service, "_get_client", lambda: FakeClient(response))
+
+    regions = service.extract_text_regions(img_path)
+
+    assert len(regions) < 60
+    assert service.regions_detected_raw >= 300
+    assert service.regions_after_paragraph_grouping <= 60

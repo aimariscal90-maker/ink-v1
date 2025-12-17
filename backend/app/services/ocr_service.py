@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
-from typing import List
+from typing import List, Sequence
 
 from google.cloud import vision
 
 from app.models.text import BBox, TextRegion
 from app.services.cache_service import CacheService
+
+
+logger = logging.getLogger(__name__)
 
 
 class OcrService:
@@ -15,10 +19,13 @@ class OcrService:
     """
 
     MIN_AREA_RATIO = 0.0005
+    MIN_AREA_PX = 120
     MIN_TEXT_LEN = 3
     MIN_CONFIDENCE = 0.5
-    MERGE_GAP_PX = 20
+    MERGE_GAP_PX = 24
     MERGE_IOU_THRESHOLD = 0.2
+    MERGE_DISTANCE_PX = 32
+    HARD_CAP_PER_PAGE = 200
 
     def __init__(self, cache_service: CacheService | None = None) -> None:
         self.client = None
@@ -88,25 +95,37 @@ class OcrService:
 
         regions: List[TextRegion] = []
         raw_candidates = 0
-        grouped = 0
 
         if getattr(full_text, "pages", None):
-            regions, raw_candidates, grouped = self._extract_from_full_text(
+            regions, raw_candidates, _ = self._extract_from_full_text(
                 full_text, width, height
             )
         elif annotations:
-            regions, raw_candidates, grouped = self._extract_from_annotations(
+            regions, raw_candidates, _ = self._extract_from_annotations(
                 annotations[1:], width, height
             )
 
         self.regions_detected_raw = raw_candidates
-        self.regions_after_paragraph_grouping = grouped
 
-        filtered = self._filter_regions(regions, width, height)
+        grouped_regions = self._group_into_paragraphs(regions, width, height)
+        self.regions_after_paragraph_grouping = len(grouped_regions)
+
+        filtered = self._filter_regions(grouped_regions, width, height)
         self.regions_after_filter = len(filtered)
 
         merged = self._merge_nearby_regions(filtered, width, height)
         self.regions_after_merge = len(merged)
+
+        logger.debug(
+            "OCR metrics raw=%d grouped=%d filtered=%d merged=%d invalid=%d discarded=%d merged_ops=%d",
+            self.regions_detected_raw,
+            self.regions_after_paragraph_grouping,
+            self.regions_after_filter,
+            self.regions_after_merge,
+            self.last_invalid_bbox_count,
+            self.last_discarded_region_count,
+            self.last_merged_region_count,
+        )
 
         self.cache.set_json(
             cache_key,
@@ -134,16 +153,10 @@ class OcrService:
         xs = [v.x or 0 for v in vertices]
         ys = [v.y or 0 for v in vertices]
 
-        x_min = min(xs)
-        y_min = min(ys)
-        x_max = max(xs)
-        y_max = max(ys)
-
-        # Clamp a la imagen y normalizar
-        x_min = max(0.0, min(x_min, width))
-        y_min = max(0.0, min(y_min, height))
-        x_max = max(0.0, min(x_max, width))
-        y_max = max(0.0, min(y_max, height))
+        x_min = max(0.0, min(min(xs), width))
+        y_min = max(0.0, min(min(ys), height))
+        x_max = max(0.0, min(max(xs), width))
+        y_max = max(0.0, min(max(ys), height))
 
         if x_min >= x_max or y_min >= y_max:
             self.last_invalid_bbox_count += 1
@@ -157,10 +170,11 @@ class OcrService:
         pixel_w = x_max - x_min
         pixel_h = y_max - y_min
         area_ratio = (pixel_w * pixel_h) / float(width * height)
+        min_area_px = max(self.MIN_AREA_PX, int(width * height * self.MIN_AREA_RATIO))
         if (
             pixel_w < 2
             or pixel_h < 2
-            or pixel_w * pixel_h < 16
+            or pixel_w * pixel_h < min_area_px
             or area_ratio < self.MIN_AREA_RATIO
         ):
             self.last_discarded_region_count += 1
@@ -173,7 +187,9 @@ class OcrService:
             y_max=y_max / height,
         ).clamp()
 
-    def _extract_from_full_text(self, full_text, width: int, height: int) -> tuple[List[TextRegion], int, int]:
+    def _extract_from_full_text(
+        self, full_text, width: int, height: int
+    ) -> tuple[List[TextRegion], int, int]:
         regions: List[TextRegion] = []
         idx = 1
         raw_candidates = 0
@@ -181,33 +197,36 @@ class OcrService:
         for page in getattr(full_text, "pages", []) or []:
             for block in getattr(page, "blocks", []) or []:
                 for paragraph in getattr(block, "paragraphs", []) or []:
-                    bbox = None
+                    paragraph_bbox = None
                     if getattr(paragraph, "bounding_box", None):
-                        bbox = self._sanitize_bbox(
+                        paragraph_bbox = self._sanitize_bbox(
                             paragraph.bounding_box.vertices, width, height
                         )
-                    words = getattr(paragraph, "words", []) or []
-                    if words:
-                        raw_candidates += 1
-                    text_parts: List[str] = []
-                    confidences: List[float] = []
-                    for word in words:
+                    for word in getattr(paragraph, "words", []) or []:
+                        bbox = None
+                        if getattr(word, "bounding_box", None):
+                            bbox = self._sanitize_bbox(
+                                word.bounding_box.vertices, width, height
+                            )
+                        if not bbox and paragraph_bbox:
+                            bbox = paragraph_bbox
+                        if not bbox:
+                            continue
+
                         symbols = getattr(word, "symbols", []) or []
-                        word_text = "".join(getattr(sym, "text", "") for sym in symbols)
-                        if word_text:
-                            text_parts.append(word_text)
+                        word_text = "".join(getattr(sym, "text", "") for sym in symbols).strip()
+                        if not word_text:
+                            continue
+
+                        raw_candidates += 1
+
                         word_conf = getattr(word, "confidence", None)
-                        if isinstance(word_conf, (int, float)):
-                            confidences.append(float(word_conf))
+                        conf_val = float(word_conf) if isinstance(word_conf, (int, float)) else None
 
-                    combined_text = " ".join(text_parts).strip()
-                    conf_val = sum(confidences) / len(confidences) if confidences else None
-
-                    if combined_text and bbox:
                         regions.append(
                             TextRegion(
                                 id=str(idx),
-                                text=combined_text,
+                                text=word_text,
                                 bbox=bbox,
                                 confidence=conf_val,
                             )
@@ -219,59 +238,235 @@ class OcrService:
     def _extract_from_annotations(
         self, annotations, width: int, height: int
     ) -> tuple[List[TextRegion], int, int]:
-        sanitized: List[tuple[str, BBox]] = []
+        regions: List[TextRegion] = []
+        idx = 1
+        raw_candidates = 0
         for ann in annotations:
+            text = getattr(ann, "description", "").strip()
+            if not text:
+                continue
+            raw_candidates += 1
+
             bbox = self._sanitize_bbox(ann.bounding_poly.vertices, width, height)
             if not bbox:
                 continue
-            sanitized.append((ann.description, bbox))
 
-        sanitized.sort(key=lambda item: (item[1].y_min, item[1].x_min))
-        grouped: List[List[tuple[str, BBox]]] = []
-
-        def same_line(box_a: BBox, box_b: BBox) -> bool:
-            overlap_y = min(box_a.y_max, box_b.y_max) - max(box_a.y_min, box_b.y_min)
-            height_span = max(box_a.y_max, box_b.y_max) - min(box_a.y_min, box_b.y_min)
-            return (overlap_y / height_span) >= 0.5 if height_span else False
-
-        for text, bbox in sanitized:
-            if not grouped:
-                grouped.append([(text, bbox)])
-                continue
-
-            last_line = grouped[-1]
-            last_bbox = last_line[-1][1]
-            gap_px = 0.0
-            if bbox.x_min > last_bbox.x_max:
-                gap_px = (bbox.x_min - last_bbox.x_max) * width
-            elif bbox.x_max < last_bbox.x_min:
-                gap_px = (last_bbox.x_min - bbox.x_max) * width
-            if same_line(last_bbox, bbox) and gap_px <= self.MERGE_GAP_PX:
-                last_line.append((text, bbox))
-            else:
-                grouped.append([(text, bbox)])
-
-        regions: List[TextRegion] = []
-        idx = 1
-        for group in grouped:
-            texts = [t for t, _ in group]
-            bbox_union = BBox(
-                x_min=min(b.x_min for _, b in group),
-                y_min=min(b.y_min for _, b in group),
-                x_max=max(b.x_max for _, b in group),
-                y_max=max(b.y_max for _, b in group),
-            ).clamp()
             regions.append(
                 TextRegion(
                     id=str(idx),
-                    text=" ".join(texts).strip(),
-                    bbox=bbox_union,
+                    text=text,
+                    bbox=bbox,
                     confidence=None,
                 )
             )
             idx += 1
 
-        return regions, len(sanitized), len(regions)
+        return regions, raw_candidates, len(regions)
+
+    def _horizontal_gap_px(self, a: BBox, b: BBox, width: int) -> float:
+        if a.x_max < b.x_min:
+            return (b.x_min - a.x_max) * width
+        if b.x_max < a.x_min:
+            return (a.x_min - b.x_max) * width
+        return 0.0
+
+    def _vertical_gap_px(self, a: BBox, b: BBox, height: int) -> float:
+        if a.y_max < b.y_min:
+            return (b.y_min - a.y_max) * height
+        if b.y_max < a.y_min:
+            return (a.y_min - b.y_max) * height
+        return 0.0
+
+    def _iou(self, a: BBox, b: BBox) -> float:
+        x_left = max(a.x_min, b.x_min)
+        y_top = max(a.y_min, b.y_min)
+        x_right = min(a.x_max, b.x_max)
+        y_bottom = min(a.y_max, b.y_max)
+        inter_w = max(0.0, x_right - x_left)
+        inter_h = max(0.0, y_bottom - y_top)
+        inter = inter_w * inter_h
+        if inter == 0:
+            return 0.0
+        area_a = (a.x_max - a.x_min) * (a.y_max - a.y_min)
+        area_b = (b.x_max - b.x_min) * (b.y_max - b.y_min)
+        return inter / (area_a + area_b - inter)
+
+    def _group_into_paragraphs(
+        self, word_regions: Sequence[TextRegion], width: int, height: int
+    ) -> List[TextRegion]:
+        if not word_regions:
+            return []
+
+        sorted_words = sorted(word_regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
+
+        lines: List[List[TextRegion]] = []
+        for word in sorted_words:
+            if not lines:
+                lines.append([word])
+                continue
+
+            last_line = lines[-1]
+            last_bbox = self._union_bbox(last_line)
+            if self._is_same_line(last_bbox, word.bbox, width, height):
+                lines[-1].append(word)
+            else:
+                lines.append([word])
+
+        line_regions = [self._merge_group_to_region(group) for group in lines]
+
+        if not line_regions:
+            return []
+
+        paragraphs: List[List[TextRegion]] = []
+        for line in line_regions:
+            if not paragraphs:
+                paragraphs.append([line])
+                continue
+
+            last_paragraph = paragraphs[-1]
+            last_line_region = last_paragraph[-1]
+            if self._line_belongs_to_paragraph(last_line_region, line, width, height):
+                last_paragraph.append(line)
+            else:
+                paragraphs.append([line])
+
+        return [self._merge_lines_to_paragraph(group) for group in paragraphs]
+
+    def _is_same_line(self, a: BBox, b: BBox, width: int, height: int) -> bool:
+        overlap_y = min(a.y_max, b.y_max) - max(a.y_min, b.y_min)
+        height_span = max(a.y_max, b.y_max) - min(a.y_min, b.y_min)
+        overlap_ratio = (overlap_y / height_span) if height_span else 0.0
+        gap_y = self._vertical_gap_px(a, b, height)
+        gap_x = self._horizontal_gap_px(a, b, width)
+        avg_height_px = ((a.y_max - a.y_min) + (b.y_max - b.y_min)) / 2 * height
+        similar_height = min(a.y_max - a.y_min, b.y_max - b.y_min) / max(
+            a.y_max - a.y_min, b.y_max - b.y_min
+        )
+
+        return (
+            overlap_ratio >= 0.35
+            or (gap_y <= max(6.0, avg_height_px * 0.25) and similar_height >= 0.5)
+        ) and gap_x <= self.MERGE_GAP_PX * 1.5
+
+    def _line_belongs_to_paragraph(
+        self, previous: TextRegion, current: TextRegion, width: int, height: int
+    ) -> bool:
+        prev_box = previous.bbox
+        curr_box = current.bbox
+        vertical_gap = self._vertical_gap_px(prev_box, curr_box, height)
+        avg_height_px = ((prev_box.y_max - prev_box.y_min) + (curr_box.y_max - curr_box.y_min)) / 2 * height
+        horizontal_overlap = min(prev_box.x_max, curr_box.x_max) - max(
+            prev_box.x_min, curr_box.x_min
+        )
+        width_span = max(prev_box.x_max, curr_box.x_max) - min(prev_box.x_min, curr_box.x_min)
+        overlap_ratio = (horizontal_overlap / width_span) if width_span else 0.0
+        height_ratio = min(
+            prev_box.y_max - prev_box.y_min, curr_box.y_max - curr_box.y_min
+        ) / max(prev_box.y_max - prev_box.y_min, curr_box.y_max - curr_box.y_min)
+
+        return (
+            vertical_gap <= max(avg_height_px * 0.9, 12)
+            and overlap_ratio >= 0.2
+            and height_ratio >= 0.55
+        )
+
+    def _vertical_overlap_ratio(self, a: BBox, b: BBox) -> float:
+        overlap_y = min(a.y_max, b.y_max) - max(a.y_min, b.y_min)
+        height_span = max(a.y_max, b.y_max) - min(a.y_min, b.y_min)
+        return (overlap_y / height_span) if height_span else 0.0
+
+    def _horizontal_overlap_ratio(self, a: BBox, b: BBox) -> float:
+        overlap_x = min(a.x_max, b.x_max) - max(a.x_min, b.x_min)
+        width_span = max(a.x_max, b.x_max) - min(a.x_min, b.x_min)
+        return (overlap_x / width_span) if width_span else 0.0
+
+    def _union_bbox(self, regions: Sequence[TextRegion]) -> BBox:
+        return BBox(
+            x_min=min(r.bbox.x_min for r in regions),
+            y_min=min(r.bbox.y_min for r in regions),
+            x_max=max(r.bbox.x_max for r in regions),
+            y_max=max(r.bbox.y_max for r in regions),
+        ).clamp()
+
+    def _merge_group_to_region(self, group: Sequence[TextRegion]) -> TextRegion:
+        bbox_union = self._union_bbox(group)
+        texts = [r.text for r in group if r.text]
+        confs = [r.confidence for r in group if r.confidence is not None]
+        confidence = sum(confs) / len(confs) if confs else None
+        return TextRegion(
+            id=group[0].id,
+            text=" ".join(texts).strip(),
+            bbox=bbox_union,
+            confidence=confidence,
+        )
+
+    def _merge_lines_to_paragraph(self, lines: Sequence[TextRegion]) -> TextRegion:
+        bbox_union = self._union_bbox(lines)
+        texts = [line.text for line in lines if line.text]
+        confs = [line.confidence for line in lines if line.confidence is not None]
+        confidence = sum(confs) / len(confs) if confs else None
+        paragraph_text = "\n".join(texts).strip()
+        return TextRegion(
+            id=lines[0].id,
+            text=paragraph_text,
+            bbox=bbox_union,
+            confidence=confidence,
+        )
+
+    def _deduplicate_regions(self, regions: List[TextRegion]) -> List[TextRegion]:
+        deduped: List[TextRegion] = []
+        for region in regions:
+            is_dup = False
+            for existing in deduped:
+                if (
+                    region.text.strip().lower() == existing.text.strip().lower()
+                    and self._iou(region.bbox, existing.bbox) >= 0.9
+                ):
+                    self.last_discarded_region_count += 1
+                    is_dup = True
+                    break
+            if not is_dup:
+                deduped.append(region)
+
+        return deduped
+
+    def _merge_text(self, left: TextRegion, right: TextRegion, height: int) -> str:
+        gap_y = self._vertical_gap_px(left.bbox, right.bbox, height)
+        joiner = " "
+        if gap_y > max(8.0, (right.bbox.y_min - left.bbox.y_max) * height):
+            joiner = "\n"
+        return f"{left.text}{joiner}{right.text}".strip()
+
+    def _merge_confidence(self, left: TextRegion, right: TextRegion) -> float | None:
+        confidences = [c for c in (left.confidence, right.confidence) if c is not None]
+        if not confidences:
+            return None
+        return max(confidences)
+
+    def _should_merge(
+        self, left: TextRegion, right: TextRegion, width: int, height: int
+    ) -> bool:
+        overlap = self._iou(left.bbox, right.bbox)
+        if overlap >= self.MERGE_IOU_THRESHOLD:
+            return True
+
+        h_gap = self._horizontal_gap_px(left.bbox, right.bbox, width)
+        v_gap = self._vertical_gap_px(left.bbox, right.bbox, height)
+        vert_overlap = self._vertical_overlap_ratio(left.bbox, right.bbox)
+        horiz_overlap = self._horizontal_overlap_ratio(left.bbox, right.bbox)
+
+        height_a = (left.bbox.y_max - left.bbox.y_min) * height
+        height_b = (right.bbox.y_max - right.bbox.y_min) * height
+        height_ratio = min(height_a, height_b) / max(height_a, height_b)
+
+        if vert_overlap >= 0.3 and h_gap <= self.MERGE_GAP_PX * 1.5 and height_ratio >= 0.55:
+            return True
+
+        if horiz_overlap >= 0.3 and v_gap <= self.MERGE_DISTANCE_PX and height_ratio >= 0.55:
+            return True
+
+        distance_px = min(h_gap, v_gap)
+        return distance_px <= self.MERGE_DISTANCE_PX and height_ratio >= 0.5
 
     def _is_noise_text(self, text: str) -> bool:
         stripped = text.strip()
@@ -285,14 +480,20 @@ class OcrService:
     def _filter_regions(
         self, regions: List[TextRegion], width: int, height: int
     ) -> List[TextRegion]:
+        if not regions:
+            return []
+
         filtered: List[TextRegion] = []
+        page_area = float(width * height)
+        min_area_ratio = max(self.MIN_AREA_RATIO, self.MIN_AREA_PX / page_area)
+
         for region in regions:
             if not region.bbox:
                 continue
             area_ratio = (region.bbox.x_max - region.bbox.x_min) * (
                 region.bbox.y_max - region.bbox.y_min
             )
-            if area_ratio < self.MIN_AREA_RATIO:
+            if area_ratio < min_area_ratio:
                 self.last_discarded_region_count += 1
                 continue
             conf = region.confidence if region.confidence is not None else 1.0
@@ -303,6 +504,22 @@ class OcrService:
                 self.last_discarded_region_count += 1
                 continue
             filtered.append(region)
+
+        filtered = self._deduplicate_regions(filtered)
+
+        if len(filtered) > self.HARD_CAP_PER_PAGE:
+            scored = sorted(
+                filtered,
+                key=lambda r: (
+                    (r.confidence if r.confidence is not None else 1.0)
+                    * (r.bbox.x_max - r.bbox.x_min)
+                    * (r.bbox.y_max - r.bbox.y_min)
+                ),
+                reverse=True,
+            )
+            excess = len(filtered) - self.HARD_CAP_PER_PAGE
+            self.last_discarded_region_count += excess
+            filtered = scored[: self.HARD_CAP_PER_PAGE]
 
         return filtered
 
@@ -316,54 +533,19 @@ class OcrService:
         sorted_regions = sorted(regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
         merged: List[TextRegion] = []
 
-        def iou(a: BBox, b: BBox) -> float:
-            x_left = max(a.x_min, b.x_min)
-            y_top = max(a.y_min, b.y_min)
-            x_right = min(a.x_max, b.x_max)
-            y_bottom = min(a.y_max, b.y_max)
-            inter_w = max(0.0, x_right - x_left)
-            inter_h = max(0.0, y_bottom - y_top)
-            inter = inter_w * inter_h
-            if inter == 0:
-                return 0.0
-            area_a = (a.x_max - a.x_min) * (a.y_max - a.y_min)
-            area_b = (b.x_max - b.x_min) * (b.y_max - b.y_min)
-            return inter / (area_a + area_b - inter)
-
-        def close_on_y(a: BBox, b: BBox) -> bool:
-            y_overlap = min(a.y_max, b.y_max) - max(a.y_min, b.y_min)
-            total_h = max(a.y_max, b.y_max) - min(a.y_min, b.y_min)
-            return y_overlap / total_h >= 0.5 if total_h else False
-
-        def horizontal_gap_px(a: BBox, b: BBox) -> float:
-            if a.x_max < b.x_min:
-                return (b.x_min - a.x_max) * width
-            if b.x_max < a.x_min:
-                return (a.x_min - b.x_max) * width
-            return 0.0
-
         for region in sorted_regions:
             if not merged:
                 merged.append(region)
                 continue
 
             last = merged[-1]
-            overlap = iou(last.bbox, region.bbox)
-            gap = horizontal_gap_px(last.bbox, region.bbox)
-            if overlap >= self.MERGE_IOU_THRESHOLD or (
-                close_on_y(last.bbox, region.bbox) and gap <= self.MERGE_GAP_PX
-            ):
-                union_bbox = BBox(
-                    x_min=min(last.bbox.x_min, region.bbox.x_min),
-                    y_min=min(last.bbox.y_min, region.bbox.y_min),
-                    x_max=max(last.bbox.x_max, region.bbox.x_max),
-                    y_max=max(last.bbox.y_max, region.bbox.y_max),
-                ).clamp()
+            if self._should_merge(last, region, width, height):
+                union_bbox = self._union_bbox([last, region])
                 merged[-1] = TextRegion(
                     id=last.id,
-                    text=f"{last.text} {region.text}".strip(),
+                    text=self._merge_text(last, region, height),
                     bbox=union_bbox,
-                    confidence=last.confidence,
+                    confidence=self._merge_confidence(last, region),
                 )
                 self.last_merged_region_count += 1
             else:
