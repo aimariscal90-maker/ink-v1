@@ -16,6 +16,8 @@ class TranslationService:
     regiones de texto de cómic.
     """
 
+    CACHE_VERSION = "v2"
+
     def __init__(
         self, model: str = "gpt-4.1-mini", cache_service: CacheService | None = None
     ) -> None:
@@ -36,7 +38,7 @@ class TranslationService:
         return self.client
 
     def translate_text_cached(self, text: str, target_lang: str) -> str:
-        cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
+        cache_key = f"tr:{self.CACHE_VERSION}:{target_lang}:{CacheService.key_hash(text)}"
         cached = self.cache.get_text(cache_key)
         if cached is not None:
             return cached
@@ -135,7 +137,9 @@ class TranslationService:
         missing: list[tuple[int, str]] = []
 
         for idx, text in enumerate(texts):
-            cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
+            cache_key = (
+                f"tr:{self.CACHE_VERSION}:{target_lang}:{CacheService.key_hash(text)}"
+            )
             cached = self.cache.get_text(cache_key)
             if cached is not None:
                 translations[idx] = cached
@@ -152,7 +156,9 @@ class TranslationService:
 
                 for (idx, text), translated in zip(missing, batch_translations):
                     translations[idx] = translated
-                    cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
+                    cache_key = (
+                        f"tr:{self.CACHE_VERSION}:{target_lang}:{CacheService.key_hash(text)}"
+                    )
                     self.cache.set_text(cache_key, translated)
             except Exception:
                 for idx, text in missing:

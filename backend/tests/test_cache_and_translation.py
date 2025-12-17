@@ -19,7 +19,7 @@ def test_ocr_uses_cache_when_available(monkeypatch, tmp_path):
         confidence=None,
     )
     cache.set_json(
-        f"ocr:{CacheService.key_hash(image_bytes)}",
+        f"ocr:{OcrService.CACHE_VERSION}:{CacheService.key_hash(image_bytes)}",
         {"regions": [cached_region.model_dump()]},
     )
 
@@ -39,7 +39,7 @@ def test_translation_cache_skips_model(monkeypatch, tmp_path):
     text = "hello"
     target_lang = "es"
     cache.set_text(
-        f"tr:{target_lang}:{CacheService.key_hash(text)}",
+        f"tr:{TranslationService.CACHE_VERSION}:{target_lang}:{CacheService.key_hash(text)}",
         "hola",
     )
 
