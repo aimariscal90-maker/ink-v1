@@ -9,6 +9,8 @@ from google.cloud import vision
 
 from app.models.text import BBox, TextRegion
 from app.services.cache_service import CacheService
+from app.services.region_filter import RegionKind, classify_region
+from app.core.config import get_settings
 
 
 class OcrService:
@@ -19,6 +21,7 @@ class OcrService:
     def __init__(self, cache_service: CacheService | None = None) -> None:
         self.client = None
         self.cache = cache_service or CacheService()
+        self.settings = get_settings()
         self.regions_detected_raw: int = 0
         self.regions_after_paragraph_grouping: int = 0
         self.regions_after_filter: int = 0
@@ -26,6 +29,7 @@ class OcrService:
         self.last_invalid_bbox_count: int = 0
         self.last_discarded_region_count: int = 0
         self.last_merged_region_count: int = 0
+        self.ocr_fallback_used_count: int = 0
 
     def _get_client(self):
         if self.client is None:
@@ -45,7 +49,16 @@ class OcrService:
 
         cached = self.cache.get_json(cache_key)
         if cached and isinstance(cached.get("regions"), list):
-            return [TextRegion.model_validate(region) for region in cached["regions"]]
+            regions = [TextRegion.model_validate(region) for region in cached["regions"]]
+            self.regions_detected_raw = len(regions)
+            self.regions_after_paragraph_grouping = len(regions)
+            self.regions_after_filter = len(regions)
+            self.regions_after_merge = len(regions)
+            self.last_invalid_bbox_count = 0
+            self.last_discarded_region_count = 0
+            self.last_merged_region_count = 0
+            self.ocr_fallback_used_count = 0
+            return regions
 
         image = vision.Image(content=content)
         client = self._get_client()
@@ -101,23 +114,72 @@ class OcrService:
                 )
             )
 
-        processed_regions = self._post_process_regions(
-            regions=raw_regions, image_width=width, image_height=height
+        primary_regions = self._post_process_regions(
+            regions=raw_regions,
+            image_width=width,
+            image_height=height,
+            fallback=False,
         )
+        self.ocr_fallback_used_count = 0
+
+        if self.settings.ocr_enable_fallback and self._should_retry_ocr(
+            raw_regions, primary_regions, width, height
+        ):
+            primary_regions = self._post_process_regions(
+                regions=raw_regions,
+                image_width=width,
+                image_height=height,
+                fallback=True,
+            )
+            self.ocr_fallback_used_count = 1
+
         self.last_invalid_bbox_count = invalid_bbox_count
 
         self.cache.set_json(
-            cache_key, {"regions": [r.model_dump() for r in processed_regions]}
+            cache_key, {"regions": [r.model_dump() for r in primary_regions]}
         )
 
-        return processed_regions
+        return primary_regions
 
     # ------------------------------------------------------------------
     # ------------------ Postprocesado para reducir ruido --------------
     # ------------------------------------------------------------------
 
+    def _should_retry_ocr(
+        self,
+        raw_regions: List[TextRegion],
+        processed_regions: List[TextRegion],
+        image_width: int,
+        image_height: int,
+    ) -> bool:
+        if len(raw_regions) <= 2 or len(processed_regions) == 0:
+            return True
+
+        raw_text = " ".join(r.text for r in raw_regions if r.text)
+        total_chars = len(raw_text)
+        ascii_letters = sum(1 for c in raw_text if c.isascii() and c.isalpha())
+
+        if len(raw_regions) < 5 and total_chars < 25:
+            return True
+        if len(processed_regions) < 2 and ascii_letters > 0 and total_chars < 40:
+            return True
+
+        # If all boxes are extremely tiny, give fallback a chance to loosen thresholds
+        avg_area = sum(
+            (r.bbox.x_max - r.bbox.x_min) * (r.bbox.y_max - r.bbox.y_min)
+            for r in raw_regions
+        ) / max(len(raw_regions), 1)
+        if avg_area < self.settings.ocr_min_area_ratio * 0.75:
+            return True
+
+        return False
+
     def _post_process_regions(
-        self, regions: List[TextRegion], image_width: int, image_height: int
+        self,
+        regions: List[TextRegion],
+        image_width: int,
+        image_height: int,
+        fallback: bool,
     ) -> List[TextRegion]:
         """
         Reduce explosión de palabras agrupando por líneas/párrafos, filtrando ruido
@@ -139,7 +201,9 @@ class OcrService:
         )
         self.regions_after_paragraph_grouping = len(paragraph_grouped)
 
-        filtered = self._filter_regions(paragraph_grouped, image_width, image_height)
+        filtered = self._filter_regions(
+            paragraph_grouped, image_width, image_height, fallback=fallback
+        )
         self.regions_after_filter = len(filtered)
 
         merged = self._merge_nearby_regions(filtered, image_width, image_height)
@@ -160,7 +224,7 @@ class OcrService:
     def _group_by_lines(
         self, regions: List[TextRegion], image_width: int, image_height: int
     ) -> List[TextRegion]:
-        y_tolerance_px = 10
+        y_tolerance_px = self.settings.ocr_line_tolerance_px
 
         sorted_regions = sorted(regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
         lines: List[List[TextRegion]] = []
@@ -192,8 +256,8 @@ class OcrService:
         if not lines:
             return []
 
-        block_gap_px = 18
-        min_x_overlap_ratio = 0.15
+        block_gap_px = self.settings.ocr_block_gap_px
+        min_x_overlap_ratio = self.settings.ocr_min_x_overlap_ratio
 
         ordered = sorted(lines, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
         blocks: List[List[TextRegion]] = [[ordered[0]]]
@@ -212,12 +276,18 @@ class OcrService:
         return [self._aggregate_regions(block, f"block-{idx}") for idx, block in enumerate(blocks)]
 
     def _filter_regions(
-        self, regions: List[TextRegion], image_width: int, image_height: int
+        self,
+        regions: List[TextRegion],
+        image_width: int,
+        image_height: int,
+        fallback: bool,
     ) -> List[TextRegion]:
-        MIN_CONFIDENCE = 0.55
-        MIN_AREA_RATIO = 0.0004
-        MIN_W_PX = 8
-        MIN_H_PX = 8
+        settings = self.settings
+        min_conf = settings.ocr_min_confidence * (0.7 if fallback else 1.0)
+        min_area_ratio = settings.ocr_min_area_ratio * (0.5 if fallback else 1.0)
+        max_area_ratio = settings.ocr_max_area_ratio
+        min_w_px = settings.ocr_min_width_px
+        min_h_px = settings.ocr_min_height_px
 
         noise_regex = re.compile(r"^[^A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ]+$")
         repeated_regex = re.compile(r"^(.)\1{3,}$")
@@ -232,7 +302,7 @@ class OcrService:
                 continue
 
             confidence = region.confidence if region.confidence is not None else 1.0
-            if confidence < MIN_CONFIDENCE:
+            if confidence < min_conf:
                 discarded += 1
                 continue
 
@@ -241,10 +311,10 @@ class OcrService:
             height = (bbox.y_max - bbox.y_min) * image_height
             area_ratio = (bbox.x_max - bbox.x_min) * (bbox.y_max - bbox.y_min)
 
-            if area_ratio < MIN_AREA_RATIO:
+            if area_ratio < min_area_ratio or area_ratio > max_area_ratio:
                 discarded += 1
                 continue
-            if width < MIN_W_PX or height < MIN_H_PX:
+            if width < min_w_px or height < min_h_px:
                 discarded += 1
                 continue
             if noise_regex.match(text) or repeated_regex.match(text):
@@ -255,6 +325,17 @@ class OcrService:
                 sum(1 for c in text if not c.isalnum()) / max(1, len(text))
             )
             if non_alnum_ratio > 0.6:
+                discarded += 1
+                continue
+
+            region_kind = classify_region(
+                text=text,
+                bbox=bbox,
+                confidence=confidence,
+                page_w=image_width,
+                page_h=image_height,
+            )
+            if settings.ocr_filter_non_dialogue and region_kind == RegionKind.NON_DIALOGUE:
                 discarded += 1
                 continue
 
@@ -269,7 +350,7 @@ class OcrService:
         if not regions:
             return []
 
-        MERGE_GAP_PX = 16
+        MERGE_GAP_PX = self.settings.ocr_merge_gap_px
         MIN_OVERLAP_RATIO = 0.1
 
         remaining = sorted(regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
