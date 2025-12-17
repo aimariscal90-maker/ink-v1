@@ -83,6 +83,14 @@ class PipelineService:
             render_time = 0.0
             qa_overflow_total = 0
             qa_retry_total = 0
+            regions_detected_raw_total = 0
+            regions_after_paragraph_grouping_total = 0
+            regions_after_filter_total = 0
+            regions_after_merge_total = 0
+            invalid_bbox_total = 0
+            discarded_region_total = 0
+            merged_region_total = 0
+            fallback_used_total = 0
 
             for page in pages:
                 page_number = page.index + 1
@@ -97,30 +105,41 @@ class PipelineService:
                 )
                 ocr_time += perf_counter() - ocr_started_at
                 job.regions_total += len(regions)
-                job.regions_detected_raw = getattr(
+                regions_detected_raw_total += getattr(
                     self.ocr_service, "regions_detected_raw", 0
                 )
-                job.regions_after_paragraph_grouping = getattr(
+                regions_after_paragraph_grouping_total += getattr(
                     self.ocr_service, "regions_after_paragraph_grouping", 0
                 )
-                job.regions_after_filter = getattr(
+                regions_after_filter_total += getattr(
                     self.ocr_service, "regions_after_filter", 0
                 )
-                job.regions_after_merge = getattr(
+                regions_after_merge_total += getattr(
                     self.ocr_service, "regions_after_merge", 0
                 )
-                job.invalid_bbox_count = getattr(
+                invalid_bbox_total += getattr(
                     self.ocr_service, "last_invalid_bbox_count", 0
                 )
-                job.discarded_region_count = getattr(
+                discarded_region_total += getattr(
                     self.ocr_service, "last_discarded_region_count", 0
                 )
-                job.merged_region_count = getattr(
+                merged_region_total += getattr(
                     self.ocr_service, "last_merged_region_count", 0
                 )
-                job.ocr_fallback_used_count += getattr(
+                fallback_used_total += getattr(
                     self.ocr_service, "ocr_fallback_used_count", 0
                 )
+
+                job.regions_detected_raw = regions_detected_raw_total
+                job.regions_after_paragraph_grouping = (
+                    regions_after_paragraph_grouping_total
+                )
+                job.regions_after_filter = regions_after_filter_total
+                job.regions_after_merge = regions_after_merge_total
+                job.invalid_bbox_count = invalid_bbox_total
+                job.discarded_region_count = discarded_region_total
+                job.merged_region_count = merged_region_total
+                job.ocr_fallback_used_count = fallback_used_total
                 self.job_service.update_job(job)
 
                 # 3) Traducción (batch por página)
@@ -175,6 +194,16 @@ class PipelineService:
             job.timing_export_ms = int((perf_counter() - export_started_at) * 1000)
             job.qa_overflow_count = qa_overflow_total
             job.qa_retry_count = qa_retry_total
+            job.regions_detected_raw = regions_detected_raw_total
+            job.regions_after_paragraph_grouping = (
+                regions_after_paragraph_grouping_total
+            )
+            job.regions_after_filter = regions_after_filter_total
+            job.regions_after_merge = regions_after_merge_total
+            job.invalid_bbox_count = invalid_bbox_total
+            job.discarded_region_count = discarded_region_total
+            job.merged_region_count = merged_region_total
+            job.ocr_fallback_used_count = fallback_used_total
 
             # Marcar como completado
             job.mark_completed(output_path=output_path, num_pages=len(translated_pages))
