@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     ocr_line_tolerance_px: int = 10
     ocr_block_gap_px: int = 18
     ocr_min_x_overlap_ratio: float = 0.15
+    ocr_merge_max_area_growth_ratio: float = 1.6
+    ocr_merge_min_height_ratio: float = 0.55
+    ocr_merge_max_center_distance_ratio: float = 0.45
+    ocr_merge_min_alignment_overlap: float = 0.12
+    ocr_merge_max_characters: int = 320
+    ocr_merge_gutter_gap_px: int = 48
     ocr_enable_fallback: bool = True
     ocr_filter_non_dialogue: bool = True
 

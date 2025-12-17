@@ -352,42 +352,97 @@ class OcrService:
 
         MERGE_GAP_PX = self.settings.ocr_merge_gap_px
         MIN_OVERLAP_RATIO = 0.1
+        MAX_AREA_GROWTH = self.settings.ocr_merge_max_area_growth_ratio
+        MIN_HEIGHT_RATIO = self.settings.ocr_merge_min_height_ratio
+        MAX_CENTER_DISTANCE_RATIO = self.settings.ocr_merge_max_center_distance_ratio
+        MIN_ALIGNMENT_OVERLAP = self.settings.ocr_merge_min_alignment_overlap
+        MAX_CHARACTERS = self.settings.ocr_merge_max_characters
+        GUTTER_GAP_PX = self.settings.ocr_merge_gutter_gap_px
 
         remaining = sorted(regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
         merged: List[TextRegion] = []
+
+        def _bbox_area(bbox: BBox) -> float:
+            return max(0.0, (bbox.x_max - bbox.x_min) * (bbox.y_max - bbox.y_min))
 
         while remaining:
             current = remaining.pop(0)
             merged_with_current: List[TextRegion] = [current]
             to_remove = []
             for idx, candidate in enumerate(remaining):
+                current_bbox = self._union_bbox([r.bbox for r in merged_with_current])
+
                 x_gap_px = self._axis_gap_px(
-                    current.bbox.x_min,
-                    current.bbox.x_max,
+                    current_bbox.x_min,
+                    current_bbox.x_max,
                     candidate.bbox.x_min,
                     candidate.bbox.x_max,
                     image_width,
                 )
                 y_gap_px = self._axis_gap_px(
-                    current.bbox.y_min,
-                    current.bbox.y_max,
+                    current_bbox.y_min,
+                    current_bbox.y_max,
                     candidate.bbox.y_min,
                     candidate.bbox.y_max,
                     image_height,
                 )
 
-                x_overlap = self._x_overlap_ratio(current.bbox, candidate.bbox)
-                y_overlap = self._y_overlap_ratio(current.bbox, candidate.bbox)
+                if x_gap_px > GUTTER_GAP_PX or y_gap_px > GUTTER_GAP_PX:
+                    continue
 
-                should_merge = (
+                x_overlap = self._x_overlap_ratio(current_bbox, candidate.bbox)
+                y_overlap = self._y_overlap_ratio(current_bbox, candidate.bbox)
+
+                spatial_proximity = (
                     (x_overlap >= MIN_OVERLAP_RATIO and y_gap_px <= MERGE_GAP_PX)
                     or (y_overlap >= MIN_OVERLAP_RATIO and x_gap_px <= MERGE_GAP_PX)
                     or (x_gap_px <= MERGE_GAP_PX and y_gap_px <= MERGE_GAP_PX)
                 )
 
-                if should_merge:
-                    merged_with_current.append(candidate)
-                    to_remove.append(idx)
+                if not spatial_proximity:
+                    continue
+
+                current_height_px = (current_bbox.y_max - current_bbox.y_min) * image_height
+                candidate_height_px = (candidate.bbox.y_max - candidate.bbox.y_min) * image_height
+                if current_height_px <= 0 or candidate_height_px <= 0:
+                    continue
+
+                height_ratio = min(current_height_px, candidate_height_px) / max(
+                    current_height_px, candidate_height_px
+                )
+                if height_ratio < MIN_HEIGHT_RATIO:
+                    continue
+
+                y_center_delta_px = abs(
+                    ((current_bbox.y_min + current_bbox.y_max) / 2)
+                    - ((candidate.bbox.y_min + candidate.bbox.y_max) / 2)
+                ) * image_height
+                avg_height_px = (current_height_px + candidate_height_px) / 2
+                center_distance_ratio = y_center_delta_px / max(avg_height_px, 1e-6)
+                if center_distance_ratio > MAX_CENTER_DISTANCE_RATIO:
+                    continue
+
+                alignment_overlap = max(x_overlap, y_overlap)
+                if alignment_overlap < MIN_ALIGNMENT_OVERLAP:
+                    continue
+
+                union_bbox = self._union_bbox([current_bbox, candidate.bbox])
+                union_area = _bbox_area(union_bbox)
+                combined_area = _bbox_area(current_bbox) + _bbox_area(candidate.bbox)
+                if combined_area == 0:
+                    continue
+                area_growth_ratio = union_area / combined_area
+                if area_growth_ratio > MAX_AREA_GROWTH:
+                    continue
+
+                total_characters = sum(len(r.text) for r in merged_with_current) + len(
+                    candidate.text
+                )
+                if total_characters > MAX_CHARACTERS:
+                    continue
+
+                merged_with_current.append(candidate)
+                to_remove.append(idx)
 
             for idx in reversed(to_remove):
                 remaining.pop(idx)
