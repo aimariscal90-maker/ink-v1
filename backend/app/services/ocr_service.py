@@ -113,7 +113,9 @@ class OcrService:
         filtered = self._filter_regions(grouped_regions, width, height)
         self.regions_after_filter = len(filtered)
 
-        merged = self._merge_nearby_regions(filtered, width, height)
+        consolidated = self._consolidate_paragraphs(filtered, width, height)
+
+        merged = self._merge_nearby_regions(consolidated, width, height)
         self.regions_after_merge = len(merged)
 
         logger.debug(
@@ -190,6 +192,14 @@ class OcrService:
     def _extract_from_full_text(
         self, full_text, width: int, height: int
     ) -> tuple[List[TextRegion], int, int]:
+        """Extrae bloques de texto a nivel de párrafo.
+
+        Procesar a nivel de palabra genera cientos de regiones pequeñas. Aquí
+        consolidamos cada párrafo en una sola región desde el OCR de Google,
+        usando el bbox del párrafo (o la unión de las palabras) y promediando
+        la confianza.
+        """
+
         regions: List[TextRegion] = []
         idx = 1
         raw_candidates = 0
@@ -202,6 +212,11 @@ class OcrService:
                         paragraph_bbox = self._sanitize_bbox(
                             paragraph.bounding_box.vertices, width, height
                         )
+
+                    word_texts: List[str] = []
+                    word_bboxes: List[BBox] = []
+                    word_confidences: List[float] = []
+
                     for word in getattr(paragraph, "words", []) or []:
                         bbox = None
                         if getattr(word, "bounding_box", None):
@@ -218,20 +233,38 @@ class OcrService:
                         if not word_text:
                             continue
 
-                        raw_candidates += 1
-
+                        word_texts.append(word_text)
+                        word_bboxes.append(bbox)
                         word_conf = getattr(word, "confidence", None)
-                        conf_val = float(word_conf) if isinstance(word_conf, (int, float)) else None
+                        if isinstance(word_conf, (int, float)):
+                            word_confidences.append(float(word_conf))
 
-                        regions.append(
-                            TextRegion(
-                                id=str(idx),
-                                text=word_text,
-                                bbox=bbox,
-                                confidence=conf_val,
-                            )
+                    if not word_texts:
+                        continue
+
+                    raw_candidates += 1
+
+                    bbox = paragraph_bbox
+                    if not bbox and word_bboxes:
+                        bbox = self._union_bboxes(word_bboxes)
+                    if not bbox:
+                        continue
+
+                    confidence = (
+                        sum(word_confidences) / len(word_confidences)
+                        if word_confidences
+                        else None
+                    )
+
+                    regions.append(
+                        TextRegion(
+                            id=str(idx),
+                            text=" ".join(word_texts).strip(),
+                            bbox=bbox,
+                            confidence=confidence,
                         )
-                        idx += 1
+                    )
+                    idx += 1
 
         return regions, raw_candidates, len(regions)
 
@@ -388,6 +421,14 @@ class OcrService:
             y_max=max(r.bbox.y_max for r in regions),
         ).clamp()
 
+    def _union_bboxes(self, bboxes: Sequence[BBox]) -> BBox:
+        return BBox(
+            x_min=min(b.x_min for b in bboxes),
+            y_min=min(b.y_min for b in bboxes),
+            x_max=max(b.x_max for b in bboxes),
+            y_max=max(b.y_max for b in bboxes),
+        ).clamp()
+
     def _merge_group_to_region(self, group: Sequence[TextRegion]) -> TextRegion:
         bbox_union = self._union_bbox(group)
         texts = [r.text for r in group if r.text]
@@ -522,6 +563,93 @@ class OcrService:
             filtered = scored[: self.HARD_CAP_PER_PAGE]
 
         return filtered
+
+    def _paragraphs_belong_together(
+        self, left: TextRegion, right: TextRegion, width: int, height: int
+    ) -> bool:
+        iou = self._iou(left.bbox, right.bbox)
+        if iou >= 0.05:
+            return True
+
+        vertical_gap = self._vertical_gap_px(left.bbox, right.bbox, height)
+        horizontal_gap = self._horizontal_gap_px(left.bbox, right.bbox, width)
+        vert_overlap = self._vertical_overlap_ratio(left.bbox, right.bbox)
+        horiz_overlap = self._horizontal_overlap_ratio(left.bbox, right.bbox)
+
+        avg_height_px = (
+            (left.bbox.y_max - left.bbox.y_min)
+            + (right.bbox.y_max - right.bbox.y_min)
+        )
+        avg_height_px = avg_height_px / 2 * height
+
+        avg_width_px = (
+            (left.bbox.x_max - left.bbox.x_min)
+            + (right.bbox.x_max - right.bbox.x_min)
+        )
+        avg_width_px = avg_width_px / 2 * width
+
+        same_column = horiz_overlap >= 0.2 and vertical_gap <= max(18.0, avg_height_px * 1.25)
+        side_by_side = vert_overlap >= 0.35 and horizontal_gap <= max(24.0, avg_width_px * 0.35)
+
+        close_distance = min(vertical_gap, horizontal_gap) <= max(
+            self.MERGE_DISTANCE_PX * 1.5, avg_height_px * 0.6
+        )
+
+        return same_column or side_by_side or close_distance
+
+    def _merge_paragraph_nodes(
+        self, left: TextRegion, right: TextRegion, width: int, height: int
+    ) -> TextRegion:
+        union_bbox = self._union_bbox([left, right])
+        merged_text = self._merge_text(left, right, height)
+        merged_confidence = self._merge_confidence(left, right)
+
+        return TextRegion(
+            id=left.id,
+            text=merged_text,
+            bbox=union_bbox,
+            confidence=merged_confidence,
+        )
+
+    def _consolidate_paragraphs(
+        self, regions: List[TextRegion], width: int, height: int
+    ) -> List[TextRegion]:
+        if not regions:
+            return []
+
+        regions = sorted(regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
+        changed = True
+
+        while changed and len(regions) > 1:
+            changed = False
+            new_regions: List[TextRegion] = []
+            used = set()
+
+            for idx, region in enumerate(regions):
+                if idx in used:
+                    continue
+
+                accumulator = region
+                for other_idx in range(idx + 1, len(regions)):
+                    if other_idx in used:
+                        continue
+                    candidate = regions[other_idx]
+
+                    if self._paragraphs_belong_together(
+                        accumulator, candidate, width, height
+                    ):
+                        accumulator = self._merge_paragraph_nodes(
+                            accumulator, candidate, width, height
+                        )
+                        used.add(other_idx)
+                        self.last_merged_region_count += 1
+                        changed = True
+
+                new_regions.append(accumulator)
+
+            regions = sorted(new_regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
+
+        return regions
 
     def _merge_nearby_regions(
         self, regions: List[TextRegion], width: int, height: int
