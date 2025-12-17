@@ -31,7 +31,10 @@ def test_post_process_reduces_word_explosion(tmp_path):
                 idx += 1
 
     processed = service._post_process_regions(
-        raw_regions, image_width=1000, image_height=1000, fallback=False
+        raw_regions,
+        image_width=1000,
+        image_height=1000,
+        fallback=False,
     )
 
     assert service.regions_detected_raw == len(raw_regions)
