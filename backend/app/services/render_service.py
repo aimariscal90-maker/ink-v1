@@ -10,6 +10,31 @@ from app.models.text import BBox, TranslatedRegion
 from app.services.layout_service import LayoutResult, LayoutService
 
 
+def sanitize_bbox_to_pixels(
+    bbox: BBox, width: int, height: int
+) -> Tuple[int, int, int, int] | None:
+    """Clampa un BBox normalizado a coordenadas de píxeles válidas."""
+
+    clamped = bbox.clamp()
+    x1 = int(clamped.x_min * width)
+    y1 = int(clamped.y_min * height)
+    x2 = int(clamped.x_max * width)
+    y2 = int(clamped.y_max * height)
+
+    x1 = max(0, min(x1, width - 1))
+    y1 = max(0, min(y1, height - 1))
+    x2 = max(x1 + 1, min(x2, width))
+    y2 = max(y1 + 1, min(y2, height))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    if (x2 - x1) < 2 or (y2 - y1) < 2:
+        return None
+
+    return x1, y1, x2, y2
+
+
 @dataclass
 class RenderResult:
     output_image: Path
@@ -175,23 +200,7 @@ class RenderService:
     # ---------- Helpers internos ----------
 
     def _sanitize_bbox(self, bbox: BBox, width: int, height: int) -> Tuple[int, int, int, int] | None:
-        """Normaliza el bbox y asegura coordenadas válidas en píxeles."""
-
-        clamped = bbox.clamp()
-        x1 = int(clamped.x_min * width)
-        y1 = int(clamped.y_min * height)
-        x2 = int(clamped.x_max * width)
-        y2 = int(clamped.y_max * height)
-
-        x1 = max(0, min(x1, width - 1))
-        y1 = max(0, min(y1, height - 1))
-        x2 = max(x1 + 1, min(x2, width))
-        y2 = max(y1 + 1, min(y2, height))
-
-        if x2 - x1 < 2 or y2 - y1 < 2:
-            return None
-
-        return x1, y1, x2, y2
+        return sanitize_bbox_to_pixels(bbox, width, height)
 
     def _get_base_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         """
