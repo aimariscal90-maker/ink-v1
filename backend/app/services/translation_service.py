@@ -1,3 +1,5 @@
+"""Traducción de textos usando la API de OpenAI con caché local."""
+
 from __future__ import annotations
 
 import json
@@ -36,6 +38,7 @@ class TranslationService:
         return self.client
 
     def translate_text_cached(self, text: str, target_lang: str) -> str:
+        """Traduce una cadena corta intentando reutilizar resultados previos."""
         cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
         cached = self.cache.get_text(cache_key)
         if cached is not None:
@@ -78,6 +81,7 @@ class TranslationService:
     def _translate_texts_batch(
         self, texts: List[str], source_lang: str, target_lang: str
     ) -> List[str]:
+        """Envía varios textos en una sola petición para ahorrar coste/tiempo."""
         client = self._get_client()
         response = client.chat.completions.create(
             model=self.model,
@@ -127,6 +131,7 @@ class TranslationService:
         source_lang: str = "en",
         target_lang: str = "es",
     ) -> List[TranslatedRegion]:
+        """Traduce en bloque y devuelve `TranslatedRegion` listos para renderizar."""
         if not regions:
             return []
 
@@ -178,6 +183,7 @@ class TranslationService:
         source_lang: str,
         target_lang: str,
     ) -> List[TranslatedRegion]:
+        """Wrapper público que mantiene compatibilidad con otras llamadas."""
         return self.translate_regions_batch(
             regions=regions, source_lang=source_lang, target_lang=target_lang
         )

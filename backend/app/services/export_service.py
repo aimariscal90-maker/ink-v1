@@ -1,3 +1,5 @@
+"""Toma imágenes procesadas y las empaqueta en un archivo final."""
+
 from __future__ import annotations
 
 from pathlib import Path

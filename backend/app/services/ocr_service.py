@@ -1,3 +1,5 @@
+"""Lógica de extracción de texto desde imágenes usando Google Vision OCR."""
+
 from __future__ import annotations
 
 import math
@@ -32,6 +34,7 @@ class OcrService:
         self.ocr_fallback_used_count: int = 0
 
     def _get_client(self):
+        """Crea el cliente de Vision sólo cuando se necesita."""
         if self.client is None:
             self.client = vision.ImageAnnotatorClient()
         return self.client
@@ -152,6 +155,7 @@ class OcrService:
         image_width: int,
         image_height: int,
     ) -> bool:
+        """Decide si merece la pena repetir el postproceso con ajustes suaves."""
         if len(raw_regions) <= 2 or len(processed_regions) == 0:
             return True
 
@@ -347,6 +351,7 @@ class OcrService:
     def _merge_nearby_regions(
         self, regions: List[TextRegion], image_width: int, image_height: int
     ) -> List[TextRegion]:
+        """Une cajas cercanas que probablemente formen parte del mismo globo."""
         if not regions:
             return []
 

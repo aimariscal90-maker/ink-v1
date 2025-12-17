@@ -1,3 +1,5 @@
+"""Utilidades para calcular cómo encajar texto en bocadillos de cómic."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -73,6 +75,7 @@ class LayoutService:
         font_size: int,
         line_height: float,
     ) -> Tuple[int, int]:
+        """Devuelve ancho y alto totales que ocuparán las líneas renderizadas."""
         if not lines:
             return 0, 0
 
@@ -141,6 +144,7 @@ class LayoutService:
         )
 
     def check_overflow(self, layout_result: LayoutResult, box_w: int, box_h: int, padding: int) -> bool:
+        """Comprueba si el texto calculado se sale de la caja disponible."""
         max_w = max(0, box_w - padding * 2)
         max_h = max(0, box_h - padding * 2)
         return (

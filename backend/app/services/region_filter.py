@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Heurísticas para decidir si una caja de texto parece diálogo o ruido."""
+
 import re
 from enum import Enum
 
@@ -14,6 +16,7 @@ class RegionKind(str, Enum):
 
 
 def _ratio(predicate, text: str) -> float:
+    """Calcula el porcentaje de caracteres que cumplen un predicado."""
     if not text:
         return 0.0
     count = sum(1 for c in text if predicate(c))
@@ -23,6 +26,12 @@ def _ratio(predicate, text: str) -> float:
 def classify_region(
     text: str, bbox: BBox, confidence: float | None, page_w: int, page_h: int
 ) -> RegionKind:
+    """Clasifica un fragmento de texto usando reglas sencillas.
+
+    La idea es filtrar numeraciones, onomatopeyas aisladas o ruido que el OCR
+    captura pero que no queremos traducir/pintar. Se comentan los checks para
+    que sea fácil ajustar los umbrales.
+    """
     settings = get_settings()
     cleaned = text.strip()
 

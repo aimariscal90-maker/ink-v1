@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Pinta el texto traducido encima de las imágenes originales."""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
@@ -67,6 +69,7 @@ class RenderService:
             x1, y1, x2, y2 = self._bbox_to_pixels(region.bbox, width, height)
 
             if (x2 - x1) < self.min_render_size_px or (y2 - y1) < self.min_render_size_px:
+                # Si la caja es minúscula, añadimos un poco de espacio para que quepa texto
                 pad_needed_x = max(0, self.min_render_size_px - (x2 - x1))
                 pad_needed_y = max(0, self.min_render_size_px - (y2 - y1))
                 x1 = max(0, x1 - pad_needed_x // 2)

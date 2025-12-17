@@ -1,3 +1,5 @@
+"""Servicio orquestador que ejecuta todas las etapas del pipeline."""
+
 from __future__ import annotations
 
 import logging

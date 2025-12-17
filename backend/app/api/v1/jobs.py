@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+"""Endpoints públicos para crear, consultar y procesar jobs."""
+
 from fastapi import APIRouter, UploadFile, File, HTTPException, status, BackgroundTasks
 
 from app.core.enums import JobType, OutputFormat
