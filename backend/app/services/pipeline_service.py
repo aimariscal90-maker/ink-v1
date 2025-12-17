@@ -97,6 +97,31 @@ class PipelineService:
                 )
                 ocr_time += perf_counter() - ocr_started_at
                 job.regions_total += len(regions)
+                job.regions_detected_raw = getattr(
+                    self.ocr_service, "regions_detected_raw", 0
+                )
+                job.regions_after_paragraph_grouping = getattr(
+                    self.ocr_service, "regions_after_paragraph_grouping", 0
+                )
+                job.regions_after_filter = getattr(
+                    self.ocr_service, "regions_after_filter", 0
+                )
+                job.regions_after_merge = getattr(
+                    self.ocr_service, "regions_after_merge", 0
+                )
+                job.invalid_bbox_count = getattr(
+                    self.ocr_service, "last_invalid_bbox_count", 0
+                )
+                job.discarded_region_count = getattr(
+                    self.ocr_service, "last_discarded_region_count", 0
+                )
+                job.merged_region_count = getattr(
+                    self.ocr_service, "last_merged_region_count", 0
+                )
+                job.ocr_fallback_used_count += getattr(
+                    self.ocr_service, "ocr_fallback_used_count", 0
+                )
+                self.job_service.update_job(job)
 
                 # 3) Traducción (batch por página)
                 job.progress_stage = "translate"

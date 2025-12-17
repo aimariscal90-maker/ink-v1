@@ -19,6 +19,20 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = ["*"]
     allow_credentials: bool = False
 
+    # OCR heuristics and fallbacks
+    ocr_min_confidence: float = 0.55
+    ocr_classifier_min_confidence: float = 0.4
+    ocr_min_area_ratio: float = 0.0004
+    ocr_max_area_ratio: float = 0.25
+    ocr_min_width_px: int = 8
+    ocr_min_height_px: int = 8
+    ocr_merge_gap_px: int = 16
+    ocr_line_tolerance_px: int = 10
+    ocr_block_gap_px: int = 18
+    ocr_min_x_overlap_ratio: float = 0.15
+    ocr_enable_fallback: bool = True
+    ocr_filter_non_dialogue: bool = True
+
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
 
