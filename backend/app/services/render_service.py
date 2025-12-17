@@ -29,13 +29,15 @@ class RenderService:
         max_font_size: int = 42,
         min_font_size: int = 10,
         line_height: float = 1.2,
-        padding_px: int = 8,
+        padding_px: int = 6,
+        min_render_size_px: int = 6,
     ) -> None:
         self.font_path = Path(font_path)
         self.max_font_size = max_font_size
         self.min_font_size = min_font_size
         self.line_height = line_height
         self.padding_px = padding_px
+        self.min_render_size_px = min_render_size_px
         self.layout_service = LayoutService()
 
     def render_page(
@@ -64,11 +66,19 @@ class RenderService:
             # 1) Convertimos el BBox normalizado [0,1] a coordenadas de píxel
             x1, y1, x2, y2 = self._bbox_to_pixels(region.bbox, width, height)
 
+            if (x2 - x1) < self.min_render_size_px or (y2 - y1) < self.min_render_size_px:
+                pad_needed_x = max(0, self.min_render_size_px - (x2 - x1))
+                pad_needed_y = max(0, self.min_render_size_px - (y2 - y1))
+                x1 = max(0, x1 - pad_needed_x // 2)
+                x2 = min(width, x2 + pad_needed_x - pad_needed_x // 2)
+                y1 = max(0, y1 - pad_needed_y // 2)
+                y2 = min(height, y2 + pad_needed_y - pad_needed_y // 2)
+
             # Añadir algo de padding interno (mínimo padding_px) sin colapsar la caja
-            raw_pad_x = max(self.padding_px, int((x2 - x1) * 0.05))
-            raw_pad_y = max(self.padding_px, int((y2 - y1) * 0.05))
-            pad_x = min(raw_pad_x, max(0, (x2 - x1 - 1) // 2))
-            pad_y = min(raw_pad_y, max(0, (y2 - y1 - 1) // 2))
+            raw_pad_x = min(self.padding_px, max(2, int((x2 - x1) * 0.05)))
+            raw_pad_y = min(self.padding_px, max(2, int((y2 - y1) * 0.05)))
+            pad_x = min(raw_pad_x, max(0, (x2 - x1 - 2) // 2))
+            pad_y = min(raw_pad_y, max(0, (y2 - y1 - 2) // 2))
             box_x1 = x1 + pad_x
             box_y1 = y1 + pad_y
             box_x2 = x2 - pad_x
