@@ -52,9 +52,17 @@ class Job(BaseModel):
     invalid_bbox_count: int = 0
     discarded_region_count: int = 0
     merged_region_count: int = 0
+    merge_rejected_growth: int = 0
+    merge_rejected_barrier: int = 0
+    merge_rejected_height: int = 0
+    merge_rejected_chars: int = 0
+    merge_rejected_chain: int = 0
     ocr_fallback_used_count: int = 0
     qa_overflow_count: int = 0
     qa_retry_count: int = 0
+    render_overflow_count: int = 0
+    min_font_hit_count: int = 0
+    summarize_triggered_count: int = 0
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

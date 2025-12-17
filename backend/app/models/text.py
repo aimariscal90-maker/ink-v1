@@ -42,6 +42,7 @@ class TextRegion(BaseModel):
     text: str
     bbox: BBox
     confidence: float | None = None  # 0–1 aproximado
+    region_kind: str | None = None
 
 
 class TranslatedRegion(BaseModel):
@@ -54,3 +55,4 @@ class TranslatedRegion(BaseModel):
     translated_text: str
     bbox: BBox
     confidence: float | None = None  # podemos arrastrar el del OCR
+    region_kind: str | None = None

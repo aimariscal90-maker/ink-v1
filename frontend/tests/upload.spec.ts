@@ -1,8 +1,18 @@
 /// <reference types="node" />
 /// <reference types="node" />
 import { test, expect } from '@playwright/test';
+import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+function createTemporaryPdf(): string {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'upload-test-'));
+  const filePath = path.join(tempDir, 'sample.pdf');
+  const minimalPdf = '%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n';
+  fs.writeFileSync(filePath, minimalPdf);
+  return filePath;
+}
 
 test('upload file and check CORS header', async ({ page, baseURL }) => {
   const url = baseURL ?? 'http://127.0.0.1:5173';
@@ -11,7 +21,7 @@ test('upload file and check CORS header', async ({ page, baseURL }) => {
   // In ESM environments `__dirname` may be undefined; use process.cwd() to resolve repo paths
   // Create __dirname compatible in ESM and resolve to the repo root backend tests path
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const filePath = path.resolve(__dirname, '../../backend/tests/files/sample.pdf');
+  const filePath = createTemporaryPdf();
 
   // Set the file on input
   await page.setInputFiles('input[type="file"]', filePath);

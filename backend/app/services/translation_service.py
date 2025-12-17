@@ -31,6 +31,7 @@ class TranslationService:
         self.client = None
         self.model = model
         self.cache = cache_service or CacheService()
+        self.settings = get_settings()
 
     def _get_client(self):
         if self.client is None:
@@ -77,6 +78,61 @@ class TranslationService:
             raise RuntimeError("OpenAI no devolvió contenido en la respuesta")
 
         return raw.strip()
+
+    def _looks_like_onomatopoeia(self, text: str) -> bool:
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        words = cleaned.split()
+        if len(words) > 2:
+            return False
+        if len(cleaned) <= 7 and cleaned.isupper():
+            return True
+        has_exclamations = any(ch in cleaned for ch in ["!", "?"])
+        return has_exclamations and len(cleaned) <= 10
+
+    def summarize_to_length(self, original: str, translated: str, max_chars: int) -> str:
+        """Acorta la traducción manteniendo sentido cuando el texto no cabe."""
+
+        translated = translated.strip()
+        if len(translated) <= max_chars:
+            return translated
+
+        # Si no hay cliente configurado, hacemos un recorte heurístico
+        if self.client is None and not self.settings.openai_api_key:
+            shortened = translated[: max(0, max_chars - 1)].rsplit(" ", 1)[0].strip()
+            if not shortened:
+                return translated[: max_chars].rstrip() + "…"
+            return shortened + "…"
+
+        client = self._get_client()
+        response = client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Resume manteniendo tono y nombres propios. "
+                        "Responde solo con la versión corta."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Acorta el texto en español para que quepa en un globo sin perder sentido.\n"
+                        f"Texto original en inglés: {original}\n"
+                        f"Traducción actual: {translated}\n"
+                        f"Límite aproximado de caracteres: {max_chars}"
+                    ),
+                },
+            ],
+            temperature=0.4,
+        )
+        choice = response.choices[0].message.content or translated
+        result = choice.strip()
+        if len(result) > max_chars:
+            return result[: max_chars].rstrip() + "…"
+        return result
 
     def _translate_texts_batch(
         self, texts: List[str], source_lang: str, target_lang: str
@@ -140,6 +196,9 @@ class TranslationService:
         missing: list[tuple[int, str]] = []
 
         for idx, text in enumerate(texts):
+            if self._looks_like_onomatopoeia(text):
+                translations[idx] = text
+                continue
             cache_key = f"tr:{target_lang}:{CacheService.key_hash(text)}"
             cached = self.cache.get_text(cache_key)
             if cached is not None:
@@ -172,6 +231,7 @@ class TranslationService:
                     translated_text=translated_text or region.text,
                     bbox=region.bbox,
                     confidence=region.confidence,
+                    region_kind=region.region_kind,
                 )
             )
 

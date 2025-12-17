@@ -13,6 +13,8 @@ class RegionKind(str, Enum):
     DIALOGUE = "dialogue"
     NON_DIALOGUE = "non_dialogue"
     UNKNOWN = "unknown"
+    NARRATION = "narration"
+    ONOMATOPOEIA = "onomatopoeia"
 
 
 def _ratio(predicate, text: str) -> float:
@@ -75,6 +77,12 @@ def classify_region(
 
     if cleaned.isupper() and len(cleaned) <= 4:
         return RegionKind.NON_DIALOGUE
+
+    aspect_ratio = (bbox.x_max - bbox.x_min) / max(bbox.y_max - bbox.y_min, 1e-6)
+    near_top = bbox.y_min < 0.25
+    has_sentence_stop = any(ch in cleaned for ch in [".", ";", ":"])
+    if aspect_ratio > 1.8 and near_top and has_sentence_stop:
+        return RegionKind.NARRATION
 
     if word_count >= 4 and has_lower:
         return RegionKind.DIALOGUE

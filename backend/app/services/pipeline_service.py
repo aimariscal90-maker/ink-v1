@@ -36,6 +36,7 @@ class PipelineService:
         self.ocr_service = OcrService()
         self.translation_service = TranslationService()
         self.render_service = RenderService()
+        self.render_service.translation_service = self.translation_service
         self.export_service = ExportService()
 
     # ---------- NÚCLEO DEL PIPELINE (trabaja con un Job ya cargado) ----------
@@ -93,6 +94,14 @@ class PipelineService:
             discarded_region_total = 0
             merged_region_total = 0
             fallback_used_total = 0
+            merge_rejected_growth_total = 0
+            merge_rejected_barrier_total = 0
+            merge_rejected_height_total = 0
+            merge_rejected_chars_total = 0
+            merge_rejected_chain_total = 0
+            render_overflow_total = 0
+            min_font_hit_total = 0
+            summarize_triggered_total = 0
 
             for page in pages:
                 page_number = page.index + 1
@@ -131,6 +140,21 @@ class PipelineService:
                 fallback_used_total += getattr(
                     self.ocr_service, "ocr_fallback_used_count", 0
                 )
+                merge_rejected_growth_total += getattr(
+                    self.ocr_service, "merge_rejected_growth", 0
+                )
+                merge_rejected_barrier_total += getattr(
+                    self.ocr_service, "merge_rejected_barrier", 0
+                )
+                merge_rejected_height_total += getattr(
+                    self.ocr_service, "merge_rejected_height", 0
+                )
+                merge_rejected_chars_total += getattr(
+                    self.ocr_service, "merge_rejected_chars", 0
+                )
+                merge_rejected_chain_total += getattr(
+                    self.ocr_service, "merge_rejected_chain", 0
+                )
 
                 job.regions_detected_raw = regions_detected_raw_total
                 job.regions_after_paragraph_grouping = (
@@ -142,6 +166,11 @@ class PipelineService:
                 job.discarded_region_count = discarded_region_total
                 job.merged_region_count = merged_region_total
                 job.ocr_fallback_used_count = fallback_used_total
+                job.merge_rejected_growth = merge_rejected_growth_total
+                job.merge_rejected_barrier = merge_rejected_barrier_total
+                job.merge_rejected_height = merge_rejected_height_total
+                job.merge_rejected_chars = merge_rejected_chars_total
+                job.merge_rejected_chain = merge_rejected_chain_total
                 self.job_service.update_job(job)
 
                 # 3) Traducción (batch por página)
@@ -173,6 +202,9 @@ class PipelineService:
                 render_time += perf_counter() - render_started_at
                 qa_overflow_total += render_result.qa_overflow_count
                 qa_retry_total += render_result.qa_retry_count
+                render_overflow_total += render_result.render_overflow_count
+                min_font_hit_total += render_result.min_font_hit_count
+                summarize_triggered_total += render_result.summarize_triggered_count
 
                 translated_pages.append(
                     PageImage(
@@ -196,6 +228,9 @@ class PipelineService:
             job.timing_export_ms = int((perf_counter() - export_started_at) * 1000)
             job.qa_overflow_count = qa_overflow_total
             job.qa_retry_count = qa_retry_total
+            job.render_overflow_count = render_overflow_total
+            job.min_font_hit_count = min_font_hit_total
+            job.summarize_triggered_count = summarize_triggered_total
             job.regions_detected_raw = regions_detected_raw_total
             job.regions_after_paragraph_grouping = (
                 regions_after_paragraph_grouping_total
@@ -205,6 +240,11 @@ class PipelineService:
             job.invalid_bbox_count = invalid_bbox_total
             job.discarded_region_count = discarded_region_total
             job.merged_region_count = merged_region_total
+            job.merge_rejected_growth = merge_rejected_growth_total
+            job.merge_rejected_barrier = merge_rejected_barrier_total
+            job.merge_rejected_height = merge_rejected_height_total
+            job.merge_rejected_chars = merge_rejected_chars_total
+            job.merge_rejected_chain = merge_rejected_chain_total
             job.ocr_fallback_used_count = fallback_used_total
 
             # Marcar como completado

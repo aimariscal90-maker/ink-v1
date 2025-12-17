@@ -39,14 +39,24 @@ class Settings(BaseSettings):
     ocr_line_tolerance_px: int = 10
     ocr_block_gap_px: int = 18
     ocr_min_x_overlap_ratio: float = 0.15
-    ocr_merge_max_area_growth_ratio: float = 1.6
-    ocr_merge_min_height_ratio: float = 0.55
-    ocr_merge_max_center_distance_ratio: float = 0.45
-    ocr_merge_min_alignment_overlap: float = 0.12
+    ocr_merge_max_area_growth_ratio: float = 1.35
+    ocr_merge_min_height_ratio: float = 0.58
+    ocr_merge_max_center_distance_ratio: float = 0.42
+    ocr_merge_min_alignment_overlap: float = 0.14
     ocr_merge_max_characters: int = 320
     ocr_merge_gutter_gap_px: int = 48
+    ocr_merge_max_cluster_size: int = 3
+    ocr_merge_chain_growth_ratio: float = 2.0
+    ocr_merge_barrier_whitespace_ratio: float = 0.65
+    ocr_merge_barrier_min_px: int = 6
     ocr_enable_fallback: bool = True
     ocr_filter_non_dialogue: bool = True
+
+    # Políticas de render: legibilidad mínima y máscaras respetuosas
+    render_min_readable_font_px: int = 12
+    render_summary_max_chars: int = 120
+    render_summary_min_delta: int = 20
+    render_mask_tolerance: int = 18
 
     # Le indicamos a Pydantic que lea automáticamente las variables de entorno
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)

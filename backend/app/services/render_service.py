@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageStat
 
+from app.core.config import get_settings
 from app.models.text import BBox, TranslatedRegion
 from app.services.layout_service import LayoutResult, LayoutService
 
@@ -17,6 +18,9 @@ class RenderResult:
     output_image: Path
     qa_overflow_count: int = 0
     qa_retry_count: int = 0
+    render_overflow_count: int = 0
+    min_font_hit_count: int = 0
+    summarize_triggered_count: int = 0
     layouts: List[LayoutResult] | None = None
 
 
@@ -33,6 +37,8 @@ class RenderService:
         line_height: float = 1.2,
         padding_px: int = 6,
         min_render_size_px: int = 6,
+        translation_service: Any | None = None,
+        min_readable_font: int | None = None,
     ) -> None:
         self.font_path = Path(font_path)
         self.max_font_size = max_font_size
@@ -40,6 +46,12 @@ class RenderService:
         self.line_height = line_height
         self.padding_px = padding_px
         self.min_render_size_px = min_render_size_px
+        self.translation_service = translation_service
+        settings = get_settings()
+        self.min_readable_font = min_readable_font or settings.render_min_readable_font_px
+        self.summary_max_chars = settings.render_summary_max_chars
+        self.summary_min_delta = settings.render_summary_min_delta
+        self.mask_tolerance = settings.render_mask_tolerance
         self.layout_service = LayoutService()
 
     def render_page(
@@ -62,9 +74,17 @@ class RenderService:
         width, height = img.width, img.height
         overflow_count = 0
         retry_count = 0
+        render_overflow = 0
+        min_font_hits = 0
+        summarize_hits = 0
         layouts: List[LayoutResult] = []
 
         for region in regions:
+            style = self._decide_style(region)
+            text_to_render = region.translated_text
+            if style.get("keep_original"):
+                text_to_render = region.original_text
+
             # 1) Convertimos el BBox normalizado [0,1] a coordenadas de píxel
             x1, y1, x2, y2 = self._bbox_to_pixels(region.bbox, width, height)
 
@@ -80,31 +100,46 @@ class RenderService:
             # Añadir algo de padding interno (mínimo padding_px) sin colapsar la caja
             raw_pad_x = min(self.padding_px, max(2, int((x2 - x1) * 0.05)))
             raw_pad_y = min(self.padding_px, max(2, int((y2 - y1) * 0.05)))
-            pad_x = min(raw_pad_x, max(0, (x2 - x1 - 2) // 2))
-            pad_y = min(raw_pad_y, max(0, (y2 - y1 - 2) // 2))
+            pad_x = min(raw_pad_x + style["padding"], max(0, (x2 - x1 - 2) // 2))
+            pad_y = min(raw_pad_y + style["padding"], max(0, (y2 - y1 - 2) // 2))
             box_x1 = x1 + pad_x
             box_y1 = y1 + pad_y
             box_x2 = x2 - pad_x
             box_y2 = y2 - pad_y
 
-            # 2) Pintar un rectángulo blanco (tapamos texto original)
-            draw.rectangle(
-                [box_x1, box_y1, box_x2, box_y2],
-                fill="white",
+            mask, mask_fill = self._build_balloon_mask(
+                img, (box_x1, box_y1, box_x2, box_y2), style["fill"]
             )
+            if mask is not None:
+                overlay = Image.new(
+                    "RGBA",
+                    (max(1, box_x2 - box_x1), max(1, box_y2 - box_y1)),
+                    mask_fill,
+                )
+                img.paste(overlay, (box_x1, box_y1), mask)
+            else:
+                draw.rectangle(
+                    [box_x1, box_y1, box_x2, box_y2],
+                    fill=mask_fill,
+                )
 
             # 3) Calcular tamaño de fuente y texto envuelto que quepa en la caja
             box_width = max(1, box_x2 - box_x1)
             box_height = max(1, box_y2 - box_y1)
 
+            text_for_layout = (
+                text_to_render.replace(" ", "\u00a0")
+                if not style["wrap"]
+                else text_to_render
+            )
             layout_result = self.layout_service.fit_text_to_box(
-                text=region.translated_text,
+                text=text_for_layout,
                 box_w=box_width,
                 box_h=box_height,
                 font_path=self.font_path,
-                max_font=self.max_font_size,
-                min_font=self.min_font_size,
-                line_height=self.line_height,
+                max_font=min(self.max_font_size + style["font_bonus"], 64),
+                min_font=max(self.min_font_size, style["min_font"]),
+                line_height=style["line_height"],
             )
 
             padding = min(pad_x, pad_y)
@@ -115,7 +150,8 @@ class RenderService:
             if overflow or not layout_result.fits:
                 overflow_count += 1
                 retry_count += 1
-                cleaned_text = self._normalize_text(region.translated_text)
+                render_overflow += 1
+                cleaned_text = self._normalize_text(text_to_render)
                 layout_result = self.layout_service.fit_text_to_box(
                     text=cleaned_text,
                     box_w=box_width,
@@ -129,15 +165,53 @@ class RenderService:
                     layout_result, box_width, box_height, padding=padding
                 )
 
-                if overflow and layout_result.font_size <= self.min_font_size:
-                    layout_result = self._truncate_to_fit(
-                        layout_result,
-                        box_width,
-                        box_height,
-                    )
-                    overflow = self.layout_service.check_overflow(
-                        layout_result, box_width, box_height, padding=padding
-                    )
+            if layout_result.font_size < self.min_readable_font:
+                min_font_hits += 1
+
+            if (
+                (overflow or layout_result.font_size < self.min_readable_font)
+                and self.translation_service
+                and len(text_to_render) > self.summary_min_delta
+                and not style.get("keep_original")
+            ):
+                max_chars = max(
+                    self.summary_min_delta,
+                    min(
+                        self.summary_max_chars,
+                        int((box_width * box_height) / max(self.min_readable_font, 1)),
+                    ),
+                )
+                text_to_render = self.translation_service.summarize_to_length(
+                    region.original_text, text_to_render, max_chars=max_chars
+                )
+                summarize_hits += 1
+                text_for_layout = (
+                    text_to_render.replace(" ", "\u00a0")
+                    if not style["wrap"]
+                    else text_to_render
+                )
+                layout_result = self.layout_service.fit_text_to_box(
+                    text=text_for_layout,
+                    box_w=box_width,
+                    box_h=box_height,
+                    font_path=self.font_path,
+                    max_font=min(self.max_font_size + style["font_bonus"], 64),
+                    min_font=max(self.min_font_size, style["min_font"]),
+                    line_height=style["line_height"],
+                )
+                overflow = self.layout_service.check_overflow(
+                    layout_result, box_width, box_height, padding=padding
+                )
+
+            if overflow and layout_result.font_size <= self.min_font_size:
+                layout_result = self._truncate_to_fit(
+                    layout_result,
+                    box_width,
+                    box_height,
+                )
+                overflow = self.layout_service.check_overflow(
+                    layout_result, box_width, box_height, padding=padding
+                )
 
             layouts.append(layout_result)
 
@@ -167,10 +241,79 @@ class RenderService:
             output_image=output_image,
             qa_overflow_count=overflow_count,
             qa_retry_count=retry_count,
+            render_overflow_count=render_overflow,
+            min_font_hit_count=min_font_hits,
+            summarize_triggered_count=summarize_hits,
             layouts=layouts,
         )
 
     # ---------- Helpers internos ----------
+
+    def _decide_style(self, region: TranslatedRegion) -> dict[str, Any]:
+        kind = (region.region_kind or "").lower()
+        text = region.translated_text
+        base = {
+            "fill": "white",
+            "padding": 0,
+            "line_height": self.line_height,
+            "font_bonus": 0,
+            "min_font": self.min_font_size,
+            "wrap": True,
+            "keep_original": False,
+        }
+
+        if kind == "narration":
+            base.update(
+                {
+                    "fill": (245, 242, 232, 255),
+                    "padding": 2,
+                    "line_height": max(1.05, self.line_height * 0.95),
+                    "font_bonus": -2,
+                }
+            )
+        elif kind == "onomatopoeia" or self._looks_like_onomatopoeia(text):
+            base.update(
+                {
+                    "fill": (255, 255, 255, 220),
+                    "padding": -1,
+                    "line_height": max(1.0, self.line_height * 0.9),
+                    "font_bonus": 6,
+                    "wrap": False,
+                    "keep_original": True,
+                }
+            )
+
+        return base
+
+    def _looks_like_onomatopoeia(self, text: str) -> bool:
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        if cleaned.isupper() and len(cleaned) <= 8:
+            return True
+        return len(cleaned.split()) <= 2 and cleaned.isalpha() and cleaned.isupper()
+
+    def _build_balloon_mask(
+        self, image: Image.Image, area: tuple[int, int, int, int], fallback_fill: Any
+    ) -> tuple[Image.Image | None, Any]:
+        x1, y1, x2, y2 = area
+        if x2 <= x1 or y2 <= y1:
+            return None, fallback_fill
+
+        crop = image.crop(area).convert("RGB")
+        gray = crop.convert("L")
+        histogram = gray.histogram()
+        dominant = max(range(len(histogram)), key=lambda i: histogram[i])
+        tolerance = max(6, min(self.mask_tolerance, 255 - dominant))
+
+        mask = gray.point(lambda p: 255 if p >= dominant - tolerance else 0)
+        mask = mask.filter(ImageFilter.MinFilter(3))
+
+        coverage = sum(mask.histogram()[128:]) / max(1, crop.size[0] * crop.size[1])
+        if coverage < 0.15:
+            return None, fallback_fill
+
+        return mask, fallback_fill
 
     def _bbox_to_pixels(self, bbox: BBox, width: int, height: int) -> Tuple[int, int, int, int]:
         """
