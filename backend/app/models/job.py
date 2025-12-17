@@ -34,15 +34,6 @@ class Job(BaseModel):
 
     pages_total: int = 0
     regions_total: int = 0
-    regions_detected_raw: int = 0
-    regions_after_paragraph_grouping: int = 0
-    regions_after_filter: int = 0
-    regions_after_merge: int = 0
-    qa_overflow_count: int = 0
-    qa_retry_count: int = 0
-    invalid_bbox_count: int = 0
-    discarded_region_count: int = 0
-    merged_region_count: int = 0
     qa_overflow_count: int = 0
     qa_retry_count: int = 0
 
