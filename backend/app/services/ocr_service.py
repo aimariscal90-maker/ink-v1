@@ -190,6 +190,14 @@ class OcrService:
     def _extract_from_full_text(
         self, full_text, width: int, height: int
     ) -> tuple[List[TextRegion], int, int]:
+        """Extrae bloques de texto a nivel de párrafo.
+
+        Procesar a nivel de palabra genera cientos de regiones pequeñas. Aquí
+        consolidamos cada párrafo en una sola región desde el OCR de Google,
+        usando el bbox del párrafo (o la unión de las palabras) y promediando
+        la confianza.
+        """
+
         regions: List[TextRegion] = []
         idx = 1
         raw_candidates = 0
@@ -202,6 +210,11 @@ class OcrService:
                         paragraph_bbox = self._sanitize_bbox(
                             paragraph.bounding_box.vertices, width, height
                         )
+
+                    word_texts: List[str] = []
+                    word_bboxes: List[BBox] = []
+                    word_confidences: List[float] = []
+
                     for word in getattr(paragraph, "words", []) or []:
                         bbox = None
                         if getattr(word, "bounding_box", None):
@@ -218,20 +231,38 @@ class OcrService:
                         if not word_text:
                             continue
 
-                        raw_candidates += 1
-
+                        word_texts.append(word_text)
+                        word_bboxes.append(bbox)
                         word_conf = getattr(word, "confidence", None)
-                        conf_val = float(word_conf) if isinstance(word_conf, (int, float)) else None
+                        if isinstance(word_conf, (int, float)):
+                            word_confidences.append(float(word_conf))
 
-                        regions.append(
-                            TextRegion(
-                                id=str(idx),
-                                text=word_text,
-                                bbox=bbox,
-                                confidence=conf_val,
-                            )
+                    if not word_texts:
+                        continue
+
+                    raw_candidates += 1
+
+                    bbox = paragraph_bbox
+                    if not bbox and word_bboxes:
+                        bbox = self._union_bboxes(word_bboxes)
+                    if not bbox:
+                        continue
+
+                    confidence = (
+                        sum(word_confidences) / len(word_confidences)
+                        if word_confidences
+                        else None
+                    )
+
+                    regions.append(
+                        TextRegion(
+                            id=str(idx),
+                            text=" ".join(word_texts).strip(),
+                            bbox=bbox,
+                            confidence=confidence,
                         )
-                        idx += 1
+                    )
+                    idx += 1
 
         return regions, raw_candidates, len(regions)
 
@@ -386,6 +417,14 @@ class OcrService:
             y_min=min(r.bbox.y_min for r in regions),
             x_max=max(r.bbox.x_max for r in regions),
             y_max=max(r.bbox.y_max for r in regions),
+        ).clamp()
+
+    def _union_bboxes(self, bboxes: Sequence[BBox]) -> BBox:
+        return BBox(
+            x_min=min(b.x_min for b in bboxes),
+            y_min=min(b.y_min for b in bboxes),
+            x_max=max(b.x_max for b in bboxes),
+            y_max=max(b.y_max for b in bboxes),
         ).clamp()
 
     def _merge_group_to_region(self, group: Sequence[TextRegion]) -> TextRegion:
