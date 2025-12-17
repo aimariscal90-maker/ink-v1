@@ -1,3 +1,10 @@
+"""Servicio simple en memoria para gestionar Jobs.
+
+Esta clase actúa como una pequeña capa de persistencia. Está pensada para
+ser fácil de leer y modificar, por eso cada método incluye comentarios que
+explican el propósito sin asumir experiencia previa con FastAPI o Pydantic.
+"""
+
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -23,6 +30,7 @@ class JobService:
         output_format: OutputFormat,
         input_path: Path,
     ) -> Job:
+        """Crea un job nuevo y lo guarda en el diccionario interno."""
         job_id = str(uuid4())
         job = Job(
             id=job_id,
@@ -35,6 +43,7 @@ class JobService:
         return job
 
     def get_job(self, job_id: str) -> Optional[Job]:
+        """Devuelve un job por id o None si no existe."""
         return self._jobs.get(job_id)
 
     def update_job(self, job: Job) -> None:
@@ -42,4 +51,5 @@ class JobService:
         self._jobs[job.id] = job
 
     def list_jobs(self) -> List[Job]:
+        """Listado sencillo para depuración o endpoints futuros."""
         return list(self._jobs.values())

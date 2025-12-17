@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Conversión de archivos de entrada (PDF/CBR/CBZ) a imágenes de página."""
+
 from pathlib import Path
 from typing import List
 
@@ -33,6 +35,7 @@ class ImportService:
         Punto de entrada principal. En función del tipo de job,
         delega en PDF o cómic.
         """
+        # Trabajamos en disco porque algunas librerías requieren rutas reales
         if job_type == JobType.PDF:
             return self._import_pdf(input_path)
         elif job_type == JobType.COMIC:

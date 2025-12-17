@@ -1,3 +1,10 @@
+"""Carga de configuración de la aplicación.
+
+Usa `pydantic-settings` para leer valores desde `.env` o variables de
+entorno. Las constantes y comentarios aclaran para qué sirve cada campo
+de forma que resulte legible para personas sin contexto previo.
+"""
+
 from functools import lru_cache
 from pathlib import Path
 
@@ -5,10 +12,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Contenedor tipado para todas las opciones configurables."""
+
     app_name: str = "Ink API"
     environment: str = "development"
 
-    # Directorio base para almacenar jobs (input/output)
+    # Directorio base para almacenar archivos de entrada y resultados por job
     data_dir: Path = Path("data/jobs")
 
     # Claves externas (se rellenarán vía .env en su momento)
@@ -19,7 +28,7 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = ["*"]
     allow_credentials: bool = False
 
-    # OCR heuristics and fallbacks
+    # Parámetros para afinado del OCR y sus filtros
     ocr_min_confidence: float = 0.55
     ocr_classifier_min_confidence: float = 0.4
     ocr_min_area_ratio: float = 0.0004
@@ -39,6 +48,7 @@ class Settings(BaseSettings):
     ocr_enable_fallback: bool = True
     ocr_filter_non_dialogue: bool = True
 
+    # Le indicamos a Pydantic que lea automáticamente las variables de entorno
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
 
@@ -48,6 +58,13 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Crea (y memoriza) la configuración de forma perezosa.
+
+    Usamos `lru_cache` para que sólo se construya una instancia por proceso,
+    evitando relecturas repetidas de `.env`. También normalizamos la lista de
+    orígenes permitidos para CORS cuando llega como cadena separada por comas.
+    """
+
     settings = Settings()
     # Accept comma separated `ALLOWED_ORIGINS` env value as a string
     ao = settings.allowed_origins

@@ -1,3 +1,10 @@
+"""Punto de entrada de la API usando FastAPI.
+
+Este módulo crea la aplicación, configura CORS y registra los routers.
+Los comentarios intentan explicar cada paso de forma que alguien sin
+experiencia en backend pueda seguir el flujo con facilidad.
+"""
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
@@ -7,6 +14,7 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
+# Instancia principal de FastAPI; aquí es donde se montan rutas y middleware.
 app = FastAPI(
     title="Ink v1 API",
     version="0.1.0",
@@ -30,6 +38,7 @@ async def ensure_cors_header(request: Request, call_next):
     - Otherwise, if Origin is present and in the whitelist, echo it back.
     - Optionally set `Access-Control-Allow-Credentials`.
     """
+    # `call_next` ejecuta la siguiente capa (rutas incluidas) y devuelve la respuesta.
     origin = request.headers.get("origin")
     response = await call_next(request)
 
