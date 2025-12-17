@@ -179,7 +179,7 @@ class OcrService:
         regions: List[TextRegion],
         image_width: int,
         image_height: int,
-        fallback: bool,
+        fallback: bool = False,
     ) -> List[TextRegion]:
         """
         Reduce explosión de palabras agrupando por líneas/párrafos, filtrando ruido
