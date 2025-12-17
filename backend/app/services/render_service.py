@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Tuple
 
+import logging
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageStat
 
 from app.core.config import get_settings
@@ -21,6 +22,9 @@ class RenderResult:
     render_overflow_count: int = 0
     min_font_hit_count: int = 0
     summarize_triggered_count: int = 0
+    cleanup_retry_count: int = 0
+    untranslated_skip_count: int = 0
+    overflow_skip_count: int = 0
     layouts: List[LayoutResult] | None = None
 
 
@@ -53,6 +57,7 @@ class RenderService:
         self.summary_min_delta = settings.render_summary_min_delta
         self.mask_tolerance = settings.render_mask_tolerance
         self.layout_service = LayoutService()
+        self.logger = logging.getLogger(__name__)
 
     def render_page(
         self,
@@ -77,11 +82,22 @@ class RenderService:
         render_overflow = 0
         min_font_hits = 0
         summarize_hits = 0
+        cleanup_retries = 0
+        untranslated_skips = 0
+        overflow_skips = 0
         layouts: List[LayoutResult] = []
 
         for region in regions:
             style = self._decide_style(region)
             text_to_render = region.translated_text
+            if self._looks_untranslated(text_to_render):
+                text_to_render = self._retry_translation(region)
+                if self._looks_untranslated(text_to_render):
+                    untranslated_skips += 1
+                    self.logger.warning(
+                        "Skipping region %s due to untranslated content", region.id
+                    )
+                    continue
             if style.get("keep_original"):
                 text_to_render = region.original_text
 
@@ -107,20 +123,24 @@ class RenderService:
             box_x2 = x2 - pad_x
             box_y2 = y2 - pad_y
 
-            mask, mask_fill = self._build_balloon_mask(
-                img, (box_x1, box_y1, box_x2, box_y2), style["fill"]
-            )
-            if mask is not None:
-                overlay = Image.new(
-                    "RGBA",
-                    (max(1, box_x2 - box_x1), max(1, box_y2 - box_y1)),
+            area = (box_x1, box_y1, box_x2, box_y2)
+            mask, mask_fill = self._build_balloon_mask(img, area, style["fill"])
+
+            original_crop = img.crop(area).convert("L")
+            self._clean_region(img, area, mask, mask_fill, expand_px=1)
+
+            cleaned_crop = img.crop(area).convert("L")
+            if self._has_residual_text(original_crop, cleaned_crop):
+                cleanup_retries += 1
+                # Segundo pase más agresivo con expansión y un fallback rectangular
+                self._clean_region(
+                    img,
+                    area,
+                    mask,
                     mask_fill,
-                )
-                img.paste(overlay, (box_x1, box_y1), mask)
-            else:
-                draw.rectangle(
-                    [box_x1, box_y1, box_x2, box_y2],
-                    fill=mask_fill,
+                    expand_px=3,
+                    feather_radius=1.2,
+                    force_rect=True,
                 )
 
             # 3) Calcular tamaño de fuente y texto envuelto que quepa en la caja
@@ -221,6 +241,16 @@ class RenderService:
             text_block_w = layout_result.final_text_block_w
             text_block_h = layout_result.final_text_block_h
 
+            if overflow or not layout_result.fits:
+                overflow_skips += 1
+                self.logger.warning(
+                    "Skipping render for region %s due to overflow (w=%s h=%s)",
+                    region.id,
+                    text_block_w,
+                    text_block_h,
+                )
+                continue
+
             text_x = box_x1 + (box_width - text_block_w) // 2
             text_y = box_y1 + (box_height - text_block_h) // 2
 
@@ -244,6 +274,9 @@ class RenderService:
             render_overflow_count=render_overflow,
             min_font_hit_count=min_font_hits,
             summarize_triggered_count=summarize_hits,
+            cleanup_retry_count=cleanup_retries,
+            untranslated_skip_count=untranslated_skips,
+            overflow_skip_count=overflow_skips,
             layouts=layouts,
         )
 
@@ -315,6 +348,38 @@ class RenderService:
 
         return mask, fallback_fill
 
+    def _clean_region(
+        self,
+        image: Image.Image,
+        area: tuple[int, int, int, int],
+        mask: Image.Image | None,
+        fill: Any,
+        expand_px: int = 1,
+        feather_radius: float = 0.6,
+        force_rect: bool = False,
+    ) -> None:
+        x1, y1, x2, y2 = area
+        width, height = max(1, x2 - x1), max(1, y2 - y1)
+
+        overlay = Image.new("RGBA", (width, height), fill)
+        effective_mask: Image.Image | None = None
+
+        if not force_rect and mask is not None:
+            effective_mask = mask.convert("L")
+            if expand_px > 0:
+                size = max(3, expand_px * 2 + 1)
+                effective_mask = effective_mask.filter(ImageFilter.MaxFilter(size))
+            if feather_radius > 0:
+                effective_mask = effective_mask.filter(
+                    ImageFilter.GaussianBlur(radius=feather_radius)
+                )
+
+        if effective_mask is not None:
+            image.paste(overlay, (x1, y1), effective_mask)
+        else:
+            draw = ImageDraw.Draw(image)
+            draw.rectangle([x1, y1, x2, y2], fill=fill)
+
     def _bbox_to_pixels(self, bbox: BBox, width: int, height: int) -> Tuple[int, int, int, int]:
         """
         Convierte BBox normalizado [0,1] a coordenadas de píxel (enteros).
@@ -343,6 +408,84 @@ class RenderService:
             return self.layout_service.load_font(self.font_path, size)
         except Exception:
             return ImageFont.load_default()
+
+    def _looks_untranslated(self, text: str) -> bool:
+        if not text:
+            return False
+
+        english_hints = {
+            "the",
+            "and",
+            "of",
+            "you",
+            "i",
+            "my",
+            "your",
+            "is",
+            "are",
+            "was",
+            "were",
+            "when",
+            "what",
+            "who",
+            "hello",
+            "hi",
+            "why",
+            "where",
+            "how",
+            "brother",
+            "sister",
+            "long",
+            "time",
+        }
+
+        tokens = [t.strip(".,;:!?¡¿()[]{}\"'") for t in text.split() if t.strip()]
+        if not tokens:
+            return False
+
+        alpha_tokens = [t.lower() for t in tokens if any(ch.isalpha() for ch in t)]
+        if not alpha_tokens:
+            return False
+
+        english_hits = [t for t in alpha_tokens if t in english_hints]
+        english_ratio = len(english_hits) / max(1, len(alpha_tokens))
+        ascii_ratio = len([t for t in alpha_tokens if t.isascii()]) / len(alpha_tokens)
+
+        return english_ratio >= 0.35 or (english_ratio >= 0.2 and ascii_ratio > 0.6)
+
+    def _retry_translation(self, region: TranslatedRegion) -> str:
+        if not self.translation_service or not region.original_text:
+            return region.translated_text
+        try:
+            return self.translation_service.translate_text_cached(
+                region.original_text, target_lang="es"
+            )
+        except Exception:
+            return region.translated_text
+
+    def _dark_ratio(self, gray_image: Image.Image) -> float:
+        stat = ImageStat.Stat(gray_image)
+        histogram = gray_image.histogram()
+        dark_pixels = sum(histogram[:80])
+        total = max(1, gray_image.size[0] * gray_image.size[1])
+        return dark_pixels / total
+
+    def _edge_density(self, gray_image: Image.Image) -> float:
+        edges = gray_image.filter(ImageFilter.FIND_EDGES)
+        stat = ImageStat.Stat(edges)
+        return sum(stat.mean) / max(1, len(stat.mean))
+
+    def _has_residual_text(
+        self, before: Image.Image, after: Image.Image, tolerance: float = 0.65
+    ) -> bool:
+        before_dark = self._dark_ratio(before)
+        after_dark = self._dark_ratio(after)
+        before_edges = self._edge_density(before)
+        after_edges = self._edge_density(after)
+
+        dark_ratio_ok = after_dark < before_dark * tolerance and after_dark < 0.12
+        edge_ratio_ok = after_edges < before_edges * tolerance or after_edges < 1.5
+        return not (dark_ratio_ok and edge_ratio_ok)
 
     def _normalize_text(self, text: str) -> str:
         compact = " ".join(text.split())
