@@ -1,3 +1,5 @@
+"""Modelos que describen cajas de texto detectadas y traducidas."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
@@ -16,6 +18,9 @@ class BBox(BaseModel):
     def clamp(self) -> "BBox":
         """
         Asegura que las coordenadas están en [0, 1] y x_min <= x_max, y_min <= y_max.
+
+        Resulta útil para limpiar valores que podrían venir ligeramente
+        desordenados desde el OCR.
         """
         x_min = max(0.0, min(self.x_min, 1.0))
         y_min = max(0.0, min(self.y_min, 1.0))
@@ -37,6 +42,7 @@ class TextRegion(BaseModel):
     text: str
     bbox: BBox
     confidence: float | None = None  # 0–1 aproximado
+    region_kind: str | None = None
 
 
 class TranslatedRegion(BaseModel):
@@ -49,3 +55,4 @@ class TranslatedRegion(BaseModel):
     translated_text: str
     bbox: BBox
     confidence: float | None = None  # podemos arrastrar el del OCR
+    region_kind: str | None = None

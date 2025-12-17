@@ -1,11 +1,15 @@
+"""Lógica de extracción de texto desde imágenes usando Google Vision OCR."""
+
 from __future__ import annotations
 
 import math
 import re
+import statistics
 from pathlib import Path
 from typing import Iterable, List
 
 from google.cloud import vision
+from PIL import Image, ImageStat
 
 from app.models.text import BBox, TextRegion
 from app.services.cache_service import CacheService
@@ -30,8 +34,14 @@ class OcrService:
         self.last_discarded_region_count: int = 0
         self.last_merged_region_count: int = 0
         self.ocr_fallback_used_count: int = 0
+        self.merge_rejected_growth: int = 0
+        self.merge_rejected_barrier: int = 0
+        self.merge_rejected_height: int = 0
+        self.merge_rejected_chars: int = 0
+        self.merge_rejected_chain: int = 0
 
     def _get_client(self):
+        """Crea el cliente de Vision sólo cuando se necesita."""
         if self.client is None:
             self.client = vision.ImageAnnotatorClient()
         return self.client
@@ -72,10 +82,9 @@ class OcrService:
             return []
 
         # Dimensiones reales de la imagen
-        import PIL.Image
-
-        with PIL.Image.open(image_path) as img:
+        with Image.open(image_path) as img:
             width, height = img.width, img.height
+            gray_image = img.convert("L").copy()
 
         raw_regions: List[TextRegion] = []
         invalid_bbox_count = 0
@@ -118,6 +127,7 @@ class OcrService:
             regions=raw_regions,
             image_width=width,
             image_height=height,
+            gray_image=gray_image,
             fallback=False,
         )
         self.ocr_fallback_used_count = 0
@@ -129,6 +139,7 @@ class OcrService:
                 regions=raw_regions,
                 image_width=width,
                 image_height=height,
+                gray_image=gray_image,
                 fallback=True,
             )
             self.ocr_fallback_used_count = 1
@@ -152,6 +163,7 @@ class OcrService:
         image_width: int,
         image_height: int,
     ) -> bool:
+        """Decide si merece la pena repetir el postproceso con ajustes suaves."""
         if len(raw_regions) <= 2 or len(processed_regions) == 0:
             return True
 
@@ -179,6 +191,7 @@ class OcrService:
         regions: List[TextRegion],
         image_width: int,
         image_height: int,
+        gray_image: Image.Image | None = None,
         fallback: bool = False,
     ) -> List[TextRegion]:
         """
@@ -187,6 +200,11 @@ class OcrService:
         """
 
         self.regions_detected_raw = len(regions)
+        self.merge_rejected_growth = 0
+        self.merge_rejected_barrier = 0
+        self.merge_rejected_height = 0
+        self.merge_rejected_chars = 0
+        self.merge_rejected_chain = 0
         if not regions:
             self.regions_after_paragraph_grouping = 0
             self.regions_after_filter = 0
@@ -206,19 +224,14 @@ class OcrService:
         )
         self.regions_after_filter = len(filtered)
 
-        merged = self._merge_nearby_regions(filtered, image_width, image_height)
+        merged = self._merge_nearby_regions(
+            filtered, image_width, image_height, gray_image
+        )
         self.regions_after_merge = len(merged)
 
         self.last_merged_region_count = max(0, len(filtered) - len(merged))
 
-        # Orden de lectura estable: agrupar por bucket Y para evitar micro-variaciones
-        sorted_regions = sorted(
-            merged,
-            key=lambda r: (
-                math.floor(r.bbox.y_min * image_height / 4),
-                r.bbox.x_min,
-            ),
-        )
+        sorted_regions = self._sort_for_reading_order(merged, image_height)
         return sorted_regions
 
     def _group_by_lines(
@@ -339,14 +352,23 @@ class OcrService:
                 discarded += 1
                 continue
 
+            # Guardamos la clasificación básica para que fases posteriores
+            # (traducción/render) puedan aplicar estilos específicos.
+            region.region_kind = region_kind.value
+
             valid_regions.append(region)
 
         self.last_discarded_region_count = discarded
         return valid_regions
 
     def _merge_nearby_regions(
-        self, regions: List[TextRegion], image_width: int, image_height: int
+        self,
+        regions: List[TextRegion],
+        image_width: int,
+        image_height: int,
+        gray_image: Image.Image | None = None,
     ) -> List[TextRegion]:
+        """Une cajas cercanas que probablemente formen parte del mismo globo."""
         if not regions:
             return []
 
@@ -358,6 +380,10 @@ class OcrService:
         MIN_ALIGNMENT_OVERLAP = self.settings.ocr_merge_min_alignment_overlap
         MAX_CHARACTERS = self.settings.ocr_merge_max_characters
         GUTTER_GAP_PX = self.settings.ocr_merge_gutter_gap_px
+        MAX_CLUSTER_SIZE = self.settings.ocr_merge_max_cluster_size
+        MAX_CHAIN_GROWTH = self.settings.ocr_merge_chain_growth_ratio
+        BARRIER_WHITESPACE = self.settings.ocr_merge_barrier_whitespace_ratio
+        BARRIER_MIN_PX = self.settings.ocr_merge_barrier_min_px
 
         remaining = sorted(regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
         merged: List[TextRegion] = []
@@ -365,9 +391,70 @@ class OcrService:
         def _bbox_area(bbox: BBox) -> float:
             return max(0.0, (bbox.x_max - bbox.x_min) * (bbox.y_max - bbox.y_min))
 
+        def _has_barrier_between(a: BBox, b: BBox) -> bool:
+            if gray_image is None:
+                return False
+
+            ax1 = int(a.x_min * image_width)
+            ax2 = int(a.x_max * image_width)
+            ay1 = int(a.y_min * image_height)
+            ay2 = int(a.y_max * image_height)
+            bx1 = int(b.x_min * image_width)
+            bx2 = int(b.x_max * image_width)
+            by1 = int(b.y_min * image_height)
+            by2 = int(b.y_max * image_height)
+
+            x_gap_start = min(ax2, bx2)
+            x_gap_end = max(ax1, bx1)
+            y_gap_start = min(ay2, by2)
+            y_gap_end = max(ay1, by1)
+
+            horizontal_gap = max(0, x_gap_end - x_gap_start)
+            vertical_gap = max(0, y_gap_end - y_gap_start)
+
+            if horizontal_gap == 0 and vertical_gap == 0:
+                return False
+
+            if horizontal_gap >= vertical_gap:
+                x1 = min(ax2, bx2)
+                x2 = max(ax1, bx1)
+                y1 = max(min(ay2, by2), min(ay1, by1))
+                y2 = min(max(ay2, by2), max(ay1, by1))
+                if y2 <= y1:
+                    mid_y = int(((ay1 + ay2 + by1 + by2) / 4))
+                    y1 = max(0, mid_y - max(1, BARRIER_MIN_PX // 2))
+                    y2 = min(image_height, mid_y + max(1, BARRIER_MIN_PX // 2))
+            else:
+                y1 = min(ay2, by2)
+                y2 = max(ay1, by1)
+                x1 = max(min(ax2, bx2), min(ax1, bx1))
+                x2 = min(max(ax2, bx2), max(ax1, bx1))
+                if x2 <= x1:
+                    mid_x = int(((ax1 + ax2 + bx1 + bx2) / 4))
+                    x1 = max(0, mid_x - max(1, BARRIER_MIN_PX // 2))
+                    x2 = min(image_width, mid_x + max(1, BARRIER_MIN_PX // 2))
+
+            if x2 - x1 < BARRIER_MIN_PX and y2 - y1 < BARRIER_MIN_PX:
+                return False
+
+            bridge = gray_image.crop((x1, y1, x2, y2))
+            histogram = bridge.histogram()
+            total_pixels = bridge.size[0] * bridge.size[1]
+            if total_pixels == 0:
+                return False
+            white_pixels = sum(histogram[240:])
+            white_ratio = white_pixels / total_pixels
+            if white_ratio >= BARRIER_WHITESPACE:
+                return True
+
+            stat = ImageStat.Stat(bridge)
+            brightness_range = max(stat.extrema[0]) - min(stat.extrema[0])
+            return brightness_range > 80 and white_ratio > 0.4
+
         while remaining:
             current = remaining.pop(0)
             merged_with_current: List[TextRegion] = [current]
+            base_area = _bbox_area(current.bbox)
             to_remove = []
             for idx, candidate in enumerate(remaining):
                 current_bbox = self._union_bbox([r.bbox for r in merged_with_current])
@@ -388,6 +475,7 @@ class OcrService:
                 )
 
                 if x_gap_px > GUTTER_GAP_PX or y_gap_px > GUTTER_GAP_PX:
+                    self.merge_rejected_chain += 1
                     continue
 
                 x_overlap = self._x_overlap_ratio(current_bbox, candidate.bbox)
@@ -402,6 +490,10 @@ class OcrService:
                 if not spatial_proximity:
                     continue
 
+                if _has_barrier_between(current_bbox, candidate.bbox):
+                    self.merge_rejected_barrier += 1
+                    continue
+
                 current_height_px = (current_bbox.y_max - current_bbox.y_min) * image_height
                 candidate_height_px = (candidate.bbox.y_max - candidate.bbox.y_min) * image_height
                 if current_height_px <= 0 or candidate_height_px <= 0:
@@ -411,6 +503,7 @@ class OcrService:
                     current_height_px, candidate_height_px
                 )
                 if height_ratio < MIN_HEIGHT_RATIO:
+                    self.merge_rejected_height += 1
                     continue
 
                 y_center_delta_px = abs(
@@ -433,12 +526,22 @@ class OcrService:
                     continue
                 area_growth_ratio = union_area / combined_area
                 if area_growth_ratio > MAX_AREA_GROWTH:
+                    self.merge_rejected_growth += 1
+                    continue
+
+                if base_area > 0 and union_area / base_area > MAX_CHAIN_GROWTH:
+                    self.merge_rejected_chain += 1
                     continue
 
                 total_characters = sum(len(r.text) for r in merged_with_current) + len(
                     candidate.text
                 )
                 if total_characters > MAX_CHARACTERS:
+                    self.merge_rejected_chars += 1
+                    continue
+
+                if len(merged_with_current) >= MAX_CLUSTER_SIZE:
+                    self.merge_rejected_chain += 1
                     continue
 
                 merged_with_current.append(candidate)
@@ -454,6 +557,42 @@ class OcrService:
             )
 
         return merged
+
+    def _sort_for_reading_order(
+        self, regions: List[TextRegion], image_height: int
+    ) -> List[TextRegion]:
+        """Ordena bocadillos con un agrupado vertical adaptativo y LTR estable."""
+
+        if not regions:
+            return []
+
+        heights_px = [
+            (r.bbox.y_max - r.bbox.y_min) * image_height for r in regions
+        ]
+        median_height = statistics.median(heights_px)
+        bucket_span = max(image_height * 0.04, median_height * 1.4)
+
+        ordered = sorted(regions, key=lambda r: (r.bbox.y_min, r.bbox.x_min))
+        buckets: list[list[TextRegion]] = []
+
+        for region in ordered:
+            if not buckets:
+                buckets.append([region])
+                continue
+
+            last_bucket = buckets[-1]
+            last_max_y = max(r.bbox.y_max for r in last_bucket) * image_height
+            if region.bbox.y_min * image_height > last_max_y + bucket_span:
+                buckets.append([region])
+            else:
+                buckets[-1].append(region)
+
+        sorted_regions: list[TextRegion] = []
+        for bucket in buckets:
+            bucket_sorted = sorted(bucket, key=lambda r: (r.bbox.x_min, r.bbox.y_min))
+            sorted_regions.extend(bucket_sorted)
+
+        return sorted_regions
 
     def _aggregate_regions(self, regions: Iterable[TextRegion], new_id: str) -> TextRegion:
         bbox = self._union_bbox([r.bbox for r in regions])

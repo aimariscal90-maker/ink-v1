@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Heurísticas para decidir si una caja de texto parece diálogo o ruido."""
+
 import re
 from enum import Enum
 
@@ -11,9 +13,12 @@ class RegionKind(str, Enum):
     DIALOGUE = "dialogue"
     NON_DIALOGUE = "non_dialogue"
     UNKNOWN = "unknown"
+    NARRATION = "narration"
+    ONOMATOPOEIA = "onomatopoeia"
 
 
 def _ratio(predicate, text: str) -> float:
+    """Calcula el porcentaje de caracteres que cumplen un predicado."""
     if not text:
         return 0.0
     count = sum(1 for c in text if predicate(c))
@@ -23,6 +28,12 @@ def _ratio(predicate, text: str) -> float:
 def classify_region(
     text: str, bbox: BBox, confidence: float | None, page_w: int, page_h: int
 ) -> RegionKind:
+    """Clasifica un fragmento de texto usando reglas sencillas.
+
+    La idea es filtrar numeraciones, onomatopeyas aisladas o ruido que el OCR
+    captura pero que no queremos traducir/pintar. Se comentan los checks para
+    que sea fácil ajustar los umbrales.
+    """
     settings = get_settings()
     cleaned = text.strip()
 
@@ -66,6 +77,12 @@ def classify_region(
 
     if cleaned.isupper() and len(cleaned) <= 4:
         return RegionKind.NON_DIALOGUE
+
+    aspect_ratio = (bbox.x_max - bbox.x_min) / max(bbox.y_max - bbox.y_min, 1e-6)
+    near_top = bbox.y_min < 0.25
+    has_sentence_stop = any(ch in cleaned for ch in [".", ";", ":"])
+    if aspect_ratio > 1.8 and near_top and has_sentence_stop:
+        return RegionKind.NARRATION
 
     if word_count >= 4 and has_lower:
         return RegionKind.DIALOGUE
